@@ -298,7 +298,11 @@ impl TaskFlowApp {
                 Task::none()
             }
             Message::QuickAddSubmit => {
-                if self.quick_add_text.trim().is_empty() {
+                let raw_text = self.quick_add_text.trim().to_string();
+                self.quick_add_text.clear();
+
+                let (title, parsed_date, reminder_time) = taskflow_core::parser::parse_task_input(&raw_text);
+                if title.is_empty() {
                     return Task::none();
                 }
 
@@ -316,8 +320,15 @@ impl TaskFlowApp {
                     }
                 };
 
-                let title = self.quick_add_text.trim().to_string();
-                self.quick_add_text.clear();
+                let active_view_for_due = self.active_view.clone();
+                let due_date = parsed_date.or_else(|| match &active_view_for_due {
+                    ActiveView::Today => Some(chrono::Local::now().date_naive()),
+                    _ => if reminder_time.is_some() {
+                        Some(chrono::Local::now().date_naive())
+                    } else {
+                        None
+                    }
+                });
 
                 let db = self.db.clone();
                 let active_view = self.active_view.clone();
@@ -325,25 +336,22 @@ impl TaskFlowApp {
                     async move {
                         let conn = db.connect().map_err(|e| e.to_string())?;
                         let new_task = LocalTask {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            google_id: None,
-                            list_id,
-                            title,
-                            notes: None,
-                            status: "needsAction".to_string(),
-                            due_date: match &active_view {
-                                ActiveView::Today => Some(chrono::Utc::now().naive_utc().date()),
-                                _ => None,
-                            },
-                            reminder_time: None,
-                            parent_id: None,
-                            position: None,
-                            completed_at: None,
-                            updated_at: chrono::Utc::now(),
-                            google_updated_at: None,
-                            sync_state: SyncState::Pending,
-                            is_deleted: false,
-                            recurrence_rule: None,
+                             id: uuid::Uuid::new_v4().to_string(),
+                             google_id: None,
+                             list_id,
+                             title,
+                             notes: None,
+                             status: "needsAction".to_string(),
+                             due_date,
+                             reminder_time,
+                             parent_id: None,
+                             position: None,
+                             completed_at: None,
+                             updated_at: chrono::Utc::now(),
+                             google_updated_at: None,
+                             sync_state: SyncState::Pending,
+                             is_deleted: false,
+                             recurrence_rule: None,
                         };
                         db::tasks::create(&conn, &new_task).map_err(|e| e.to_string())?;
                         
@@ -1776,6 +1784,25 @@ impl TaskFlowApp {
             );
         }
 
+        // Reminder time badge
+        if let Some(reminder) = task.reminder_time {
+            let reminder_str = reminder.format("%I:%M %p").to_string();
+            let text_color = if is_completed {
+                colors.text_secondary
+            } else {
+                colors.accent_warning
+            };
+
+            meta_row = meta_row.push(
+                row![
+                    svg(icons::bell()).width(12).height(12).style(move |_, _| svg::Style { color: Some(text_color) }),
+                    Space::with_width(4),
+                    text(reminder_str).font(FONT_MONO).size(11).style(move |_| text::Style { color: Some(text_color) })
+                ]
+                .align_y(Alignment::Center)
+            );
+        }
+
         // Recurrence icon badge
         if task.recurrence_rule.is_some() {
             meta_row = meta_row.push(
@@ -1845,7 +1872,7 @@ impl TaskFlowApp {
 
     fn render_quick_add<'a>(&'a self, colors: ColorTokens) -> Element<'a, Message> {
         row![
-            text_input("Add a task...", &self.quick_add_text)
+            text_input("Add a task (e.g. Buy milk tomorrow at 5pm)...", &self.quick_add_text)
                 .on_input(Message::QuickAddChanged)
                 .on_submit(Message::QuickAddSubmit)
                 .padding(12)
