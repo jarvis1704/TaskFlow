@@ -1,0 +1,41 @@
+# Maintainer: TaskFlow Developers <support@taskflow.org>
+pkgname=taskflow-git
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Fast, native desktop task manager that syncs bidirectionally with Google Tasks"
+arch=('x86_64')
+url="https://github.com/taskflow/taskflow"
+license=('MIT')
+depends=('libsecret' 'dbus')
+makedepends=('cargo' 'git')
+provides=('taskflow')
+conflicts=('taskflow')
+source=('git+https://github.com/taskflow/taskflow.git')
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$srcdir/${pkgname%-git}"
+  cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
+}
+
+build() {
+  cd "$srcdir/${pkgname%-git}"
+  CARGO_TARGET_DIR=target cargo build --frozen --release --all-targets
+}
+
+package() {
+  cd "$srcdir/${pkgname%-git}"
+  
+  # Install binaries
+  install -Dm755 target/release/taskflow-gui "$pkgdir/usr/bin/taskflow-gui"
+  install -Dm755 target/release/taskflow-daemon "$pkgdir/usr/bin/taskflow-daemon"
+  
+  # Install systemd service
+  install -Dm644 packaging/systemd/taskflow-daemon.service "$pkgdir/usr/lib/systemd/user/taskflow-daemon.service"
+  
+  # Install desktop entry
+  install -Dm644 -t "$pkgdir/usr/share/applications/" "packaging/desktop/taskflow.desktop"
+  
+  # Install icon
+  install -Dm644 "assets/taskflow_icon.jpg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/taskflow.jpg"
+}

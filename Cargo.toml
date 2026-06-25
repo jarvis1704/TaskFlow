@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/taskflow-core",
+    "crates/taskflow-gui",
+    "crates/taskflow-daemon",
+]
+resolver = "2"

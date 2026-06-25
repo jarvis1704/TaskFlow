@@ -1,0 +1,13 @@
+[Unit]
+Description=TaskFlow background sync & reminders
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/taskflow-daemon
+Restart=on-failure
+RestartSec=10
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

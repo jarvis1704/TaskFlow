@@ -1,0 +1,13 @@
+[package]
+name = "taskflow-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+taskflow-core = { path = "../taskflow-core" }
+tokio = { version = "1", features = ["full"] }
+notify-rust = "4"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
