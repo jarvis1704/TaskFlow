@@ -1,0 +1,17 @@
+[package]
+name = "taskflow-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+taskflow-core = { path = "../taskflow-core" }
+iced = { version = "0.13", features = ["tokio", "svg", "image"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde_json = "1"
+
+

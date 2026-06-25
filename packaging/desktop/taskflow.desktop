@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=TaskFlow
+Comment=Fast, native task manager that syncs with Google Tasks
+Exec=taskflow-gui
+Icon=taskflow
+Terminal=false
+Type=Application
+Categories=Office;Utility;
+Keywords=tasks;todo;google;sync;
