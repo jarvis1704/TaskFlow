@@ -1768,7 +1768,10 @@ impl TaskFlowApp {
             Space::with_height(8),
             sidebar_upcoming_btn,
             Space::with_height(24),
-            scrollable(lists_col).height(Length::Fill),
+            scrollable(lists_col)
+                .height(Length::Fill)
+                .direction(modern_scroll_direction())
+                .style(move |_, status| modern_scrollbar_style(sidebar_colors, status)),
             Space::with_height(16),
             sidebar_bottom
         ]
@@ -2030,7 +2033,10 @@ impl TaskFlowApp {
                 column![
                     text("Today").size(30).font(FONT_INTER).style(move |_| text::Style { color: Some(colors.text_primary) }),
                     Space::with_height(16),
-                    scrollable(task_list_col).height(Length::Fill),
+                    scrollable(task_list_col)
+                        .height(Length::Fill)
+                        .direction(modern_scroll_direction())
+                        .style(move |_, status| modern_scrollbar_style(colors, status)),
                     Space::with_height(16),
                     quick_add,
                 ]
@@ -2105,7 +2111,10 @@ impl TaskFlowApp {
                 column![
                     text("Upcoming").size(30).font(FONT_INTER).style(move |_| text::Style { color: Some(colors.text_primary) }),
                     Space::with_height(16),
-                    scrollable(task_list_col).height(Length::Fill),
+                    scrollable(task_list_col)
+                        .height(Length::Fill)
+                        .direction(modern_scroll_direction())
+                        .style(move |_, status| modern_scrollbar_style(colors, status)),
                 ]
                 .spacing(8)
                 .padding(32)
@@ -2157,7 +2166,10 @@ impl TaskFlowApp {
                 column![
                     text(view_title).size(30).font(FONT_INTER).style(move |_| text::Style { color: Some(colors.text_primary) }),
                     Space::with_height(16),
-                    scrollable(task_list_col).height(Length::Fill),
+                    scrollable(task_list_col)
+                        .height(Length::Fill)
+                        .direction(modern_scroll_direction())
+                        .style(move |_, status| modern_scrollbar_style(colors, status)),
                     Space::with_height(16),
                     quick_add,
                 ]
@@ -3057,7 +3069,12 @@ impl TaskFlowApp {
         ]
         .spacing(4);
 
-        container(scrollable(panel_content).height(Length::Fill))
+        container(
+            scrollable(panel_content)
+                .height(Length::Fill)
+                .direction(modern_scroll_direction())
+                .style(move |_, status| modern_scrollbar_style(colors, status)),
+        )
             .padding(16)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -3286,7 +3303,10 @@ impl TaskFlowApp {
             column![
                 search_input,
                 Space::with_height(12),
-                scrollable(results_col).height(Length::Shrink)
+                scrollable(results_col)
+                    .height(Length::Shrink)
+                    .direction(modern_scroll_direction())
+                    .style(move |_, status| modern_scrollbar_style(colors, status))
             ]
             .spacing(4)
         )
@@ -3314,6 +3334,68 @@ fn with_opacity(color: iced::Color, opacity: f32) -> iced::Color {
     iced::Color {
         a: color.a * opacity,
         ..color
+    }
+}
+
+fn modern_scroll_direction() -> scrollable::Direction {
+    scrollable::Direction::Vertical(
+        scrollable::Scrollbar::new()
+            .width(8)
+            .scroller_width(4)
+            .margin(4),
+    )
+}
+
+fn modern_scrollbar_style(colors: ColorTokens, status: scrollable::Status) -> scrollable::Style {
+    let (rail_opacity, thumb_opacity, thumb_color) = match status {
+        scrollable::Status::Active => (0.0, 0.30, colors.text_secondary),
+        scrollable::Status::Hovered {
+            is_vertical_scrollbar_hovered,
+            ..
+        } => {
+            if is_vertical_scrollbar_hovered {
+                (0.08, 0.55, colors.text_secondary)
+            } else {
+                (0.0, 0.38, colors.text_secondary)
+            }
+        }
+        scrollable::Status::Dragged {
+            is_vertical_scrollbar_dragged,
+            ..
+        } => {
+            if is_vertical_scrollbar_dragged {
+                (0.10, 0.72, colors.accent_primary)
+            } else {
+                (0.0, 0.38, colors.text_secondary)
+            }
+        }
+    };
+
+    let rail = scrollable::Rail {
+        background: Some(iced::Background::Color(with_opacity(
+            colors.text_secondary,
+            rail_opacity,
+        ))),
+        border: iced::Border {
+            color: iced::Color::TRANSPARENT,
+            width: 0.0,
+            radius: 999.0.into(),
+        },
+        scroller: scrollable::Scroller {
+            color: with_opacity(thumb_color, thumb_opacity),
+            border: iced::Border {
+                color: with_opacity(colors.bg_surface, 0.30),
+                width: 1.0,
+                radius: 999.0.into(),
+            },
+        },
+    };
+
+    scrollable::Style {
+        container: container::Style::default(),
+        vertical_rail: rail,
+        horizontal_rail: rail,
+        gap: None,
     }
 }
 
