@@ -64,6 +64,7 @@ pub struct TaskFlowApp {
     sync_rotation: f32,
     sync_success_progress: f32,
     empty_state_time: f32,
+    scrollbar_visibility: f32,
 
     // Polish / Command Palette States
     selected_task_id: Option<String>,
@@ -125,6 +126,7 @@ pub enum Message {
     AuthFinished(Result<(), String>),
     Logout,
     Tick(std::time::Instant),
+    ScrollActivity,
     EventOccurred(iced::Event),
     CommandPaletteChanged(String),
     CommandPaletteSubmit,
@@ -162,6 +164,7 @@ impl TaskFlowApp {
             || self.view_fade_direction != ViewFadeDirection::Idle
             || self.syncing
             || self.sync_success_progress > 0.0
+            || self.scrollbar_visibility > 0.0
             || (self.tasks.is_empty() && self.active_view != ActiveView::Settings)
     }
 
@@ -208,6 +211,7 @@ impl TaskFlowApp {
             sync_rotation: 0.0,
             sync_success_progress: 0.0,
             empty_state_time: 0.0,
+            scrollbar_visibility: 0.0,
             selected_task_id: None,
             command_palette_open: false,
             command_palette_text: String::new(),
@@ -736,7 +740,15 @@ impl TaskFlowApp {
                     self.empty_state_time = (self.empty_state_time + dt * (2.0 * std::f32::consts::PI / 3.0)) % (2.0 * std::f32::consts::PI);
                 }
 
+                if self.scrollbar_visibility > 0.0 {
+                    self.scrollbar_visibility = (self.scrollbar_visibility - dt / 0.70).max(0.0);
+                }
+
                 completion_task
+            }
+            Message::ScrollActivity => {
+                self.scrollbar_visibility = 1.0;
+                Task::none()
             }
             Message::EventOccurred(event) => {
                 if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event {
@@ -1771,7 +1783,8 @@ impl TaskFlowApp {
             scrollable(lists_col)
                 .height(Length::Fill)
                 .direction(modern_scroll_direction())
-                .style(move |_, status| modern_scrollbar_style(sidebar_colors, status)),
+                .on_scroll(|_| Message::ScrollActivity)
+                .style(move |_, status| modern_scrollbar_style(sidebar_colors, status, self.scrollbar_visibility)),
             Space::with_height(16),
             sidebar_bottom
         ]
@@ -2036,7 +2049,8 @@ impl TaskFlowApp {
                     scrollable(task_list_col)
                         .height(Length::Fill)
                         .direction(modern_scroll_direction())
-                        .style(move |_, status| modern_scrollbar_style(colors, status)),
+                        .on_scroll(|_| Message::ScrollActivity)
+                        .style(move |_, status| modern_scrollbar_style(colors, status, self.scrollbar_visibility)),
                     Space::with_height(16),
                     quick_add,
                 ]
@@ -2114,7 +2128,8 @@ impl TaskFlowApp {
                     scrollable(task_list_col)
                         .height(Length::Fill)
                         .direction(modern_scroll_direction())
-                        .style(move |_, status| modern_scrollbar_style(colors, status)),
+                        .on_scroll(|_| Message::ScrollActivity)
+                        .style(move |_, status| modern_scrollbar_style(colors, status, self.scrollbar_visibility)),
                 ]
                 .spacing(8)
                 .padding(32)
@@ -2169,7 +2184,8 @@ impl TaskFlowApp {
                     scrollable(task_list_col)
                         .height(Length::Fill)
                         .direction(modern_scroll_direction())
-                        .style(move |_, status| modern_scrollbar_style(colors, status)),
+                        .on_scroll(|_| Message::ScrollActivity)
+                        .style(move |_, status| modern_scrollbar_style(colors, status, self.scrollbar_visibility)),
                     Space::with_height(16),
                     quick_add,
                 ]
@@ -3073,7 +3089,8 @@ impl TaskFlowApp {
             scrollable(panel_content)
                 .height(Length::Fill)
                 .direction(modern_scroll_direction())
-                .style(move |_, status| modern_scrollbar_style(colors, status)),
+                .on_scroll(|_| Message::ScrollActivity)
+                .style(move |_, status| modern_scrollbar_style(colors, status, self.scrollbar_visibility)),
         )
             .padding(16)
             .width(Length::Fill)
@@ -3306,7 +3323,8 @@ impl TaskFlowApp {
                 scrollable(results_col)
                     .height(Length::Shrink)
                     .direction(modern_scroll_direction())
-                    .style(move |_, status| modern_scrollbar_style(colors, status))
+                    .on_scroll(|_| Message::ScrollActivity)
+                    .style(move |_, status| modern_scrollbar_style(colors, status, self.scrollbar_visibility))
             ]
             .spacing(4)
         )
@@ -3342,13 +3360,14 @@ fn modern_scroll_direction() -> scrollable::Direction {
         scrollable::Scrollbar::new()
             .width(8)
             .scroller_width(4)
-            .margin(4),
+            .margin(2)
+            .spacing(8),
     )
 }
 
-fn modern_scrollbar_style(colors: ColorTokens, status: scrollable::Status) -> scrollable::Style {
+fn modern_scrollbar_style(colors: ColorTokens, status: scrollable::Status, activity: f32) -> scrollable::Style {
     let (rail_opacity, thumb_opacity, thumb_color) = match status {
-        scrollable::Status::Active => (0.0, 0.30, colors.text_secondary),
+        scrollable::Status::Active => (0.06 * activity, 0.44 * activity, colors.text_secondary),
         scrollable::Status::Hovered {
             is_vertical_scrollbar_hovered,
             ..
@@ -3356,7 +3375,7 @@ fn modern_scrollbar_style(colors: ColorTokens, status: scrollable::Status) -> sc
             if is_vertical_scrollbar_hovered {
                 (0.08, 0.55, colors.text_secondary)
             } else {
-                (0.0, 0.38, colors.text_secondary)
+                (0.06 * activity, 0.44 * activity, colors.text_secondary)
             }
         }
         scrollable::Status::Dragged {
@@ -3366,7 +3385,7 @@ fn modern_scrollbar_style(colors: ColorTokens, status: scrollable::Status) -> sc
             if is_vertical_scrollbar_dragged {
                 (0.10, 0.72, colors.accent_primary)
             } else {
-                (0.0, 0.38, colors.text_secondary)
+                (0.06 * activity, 0.44 * activity, colors.text_secondary)
             }
         }
     };
