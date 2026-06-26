@@ -76,13 +76,36 @@ pub struct TaskFlowApp {
     keyring_error: Option<String>,
     offline: bool,
     token_revoked: bool,
+
+    // Task details editing state
+    detail_title: String,
+    detail_notes: String,
+    detail_due_date_str: String,
+    detail_reminder_time_str: String,
+    new_subtask_title: String,
+    detail_subtasks: Vec<LocalTask>,
+    subtask_counts: HashMap<String, (usize, usize)>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Init,
     None,
-    LoadedData(Result<(Vec<TaskList>, Vec<LocalTask>), String>),
+    LoadedData(Result<(Vec<TaskList>, Vec<LocalTask>, HashMap<String, (usize, usize)>), String>),
+    SelectTask(Option<String>),
+    LoadedSubtasks(Result<Vec<LocalTask>, String>),
+    LoadedDataAndSubtasks(Vec<TaskList>, Vec<LocalTask>, Vec<LocalTask>, HashMap<String, (usize, usize)>),
+    DetailTitleChanged(String),
+    DetailNotesChanged(String),
+    DetailDueDateStrChanged(String),
+    DetailReminderTimeStrChanged(String),
+    SaveDateTime,
+    SetDueDateShortcut(Option<chrono::NaiveDate>),
+    NewSubtaskTitleChanged(String),
+    AddSubtask,
+    DeleteTask(String),
+    DeleteSubtask(String),
+    ToggleSubtaskComplete(String),
     SelectView(ActiveView),
     ToggleComplete(String), // task_id
     QuickAddChanged(String),
@@ -183,6 +206,13 @@ impl TaskFlowApp {
             keyring_error,
             offline: false,
             token_revoked: false,
+            detail_title: String::new(),
+            detail_notes: String::new(),
+            detail_due_date_str: String::new(),
+            detail_reminder_time_str: String::new(),
+            new_subtask_title: String::new(),
+            detail_subtasks: Vec::new(),
+            subtask_counts: HashMap::new(),
         };
 
         // Load custom fonts on startup
@@ -223,13 +253,14 @@ impl TaskFlowApp {
                         let conn = db.connect().map_err(|e| e.to_string())?;
                         let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
                         let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
-                        Ok((lists, tasks))
+                        let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                        Ok((lists, tasks, counts))
                     },
                     Message::LoadedData,
                 )
             }
             Message::None => Task::none(),
-            Message::LoadedData(Ok((lists, tasks))) => {
+            Message::LoadedData(Ok((lists, tasks, counts))) => {
                 if self.view_fade_direction == ViewFadeDirection::Idle {
                     for t in &tasks {
                         if !self.tasks.iter().any(|old_t| old_t.id == t.id) {
@@ -243,6 +274,7 @@ impl TaskFlowApp {
                 }
                 self.lists = lists;
                 self.tasks = tasks;
+                self.subtask_counts = counts;
                 Task::none()
             }
             Message::LoadedData(Err(e)) => {
@@ -288,7 +320,8 @@ impl TaskFlowApp {
                         }
                         let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
                         let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
-                        Ok((lists, tasks))
+                        let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                        Ok((lists, tasks, counts))
                     },
                     Message::LoadedData,
                 )
@@ -357,7 +390,8 @@ impl TaskFlowApp {
                         
                         let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
                         let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
-                        Ok((lists, tasks))
+                        let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                        Ok((lists, tasks, counts))
                     },
                     Message::LoadedData,
                 )
@@ -400,7 +434,8 @@ impl TaskFlowApp {
                         let conn = db.connect().map_err(|e| e.to_string())?;
                         let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
                         let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
-                        Ok((lists, tasks))
+                        let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                        Ok((lists, tasks, counts))
                     },
                     Message::LoadedData,
                 )
@@ -511,7 +546,8 @@ impl TaskFlowApp {
                             }
                             let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
                             let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
-                            Ok((lists, tasks))
+                            let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                            Ok((lists, tasks, counts))
                         },
                         Message::LoadedData,
                     );
@@ -540,7 +576,8 @@ impl TaskFlowApp {
                                         let conn = db.connect().map_err(|e| e.to_string())?;
                                         let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
                                         let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
-                                        Ok((lists, tasks))
+                                        let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                                        Ok((lists, tasks, counts))
                                     },
                                     Message::LoadedData,
                                 );
@@ -670,6 +707,9 @@ impl TaskFlowApp {
                             let mut today_tasks = Vec::new();
                             let mut completed = Vec::new();
                             for t in &self.tasks {
+                                if t.parent_id.is_some() {
+                                    continue;
+                                }
                                 if t.status == "completed" {
                                     completed.push(t);
                                 } else if let Some(due) = t.due_date {
@@ -689,6 +729,9 @@ impl TaskFlowApp {
                         ActiveView::Upcoming => {
                             let mut date_groups: std::collections::BTreeMap<Option<chrono::NaiveDate>, Vec<&LocalTask>> = std::collections::BTreeMap::new();
                             for t in &self.tasks {
+                                if t.parent_id.is_some() {
+                                    continue;
+                                }
                                 date_groups.entry(t.due_date).or_default().push(t);
                             }
                             for (_, tasks) in date_groups {
@@ -699,6 +742,9 @@ impl TaskFlowApp {
                             let mut active = Vec::new();
                             let mut completed = Vec::new();
                             for t in &self.tasks {
+                                if t.parent_id.is_some() {
+                                    continue;
+                                }
                                 if t.status == "completed" {
                                     completed.push(t);
                                 } else {
@@ -734,7 +780,8 @@ impl TaskFlowApp {
                                 }
                                 None => 0,
                             };
-                            self.selected_task_id = Some(rendered_tasks[next_idx].id.clone());
+                            let next_id = rendered_tasks[next_idx].id.clone();
+                            return self.update(Message::SelectTask(Some(next_id)));
                         }
                     } else if is_up {
                         if !rendered_tasks.is_empty() {
@@ -748,10 +795,11 @@ impl TaskFlowApp {
                                 }
                                 None => 0,
                             };
-                            self.selected_task_id = Some(rendered_tasks[next_idx].id.clone());
+                            let next_id = rendered_tasks[next_idx].id.clone();
+                            return self.update(Message::SelectTask(Some(next_id)));
                         }
                     } else if matches!(key, Key::Named(Named::Escape)) {
-                        self.selected_task_id = None;
+                        return self.update(Message::SelectTask(None));
                     } else if matches!(key, Key::Named(Named::Space) | Key::Named(Named::Enter)) {
                         if let Some(id) = &self.selected_task_id {
                             return self.update(Message::ToggleComplete(id.clone()));
@@ -784,6 +832,327 @@ impl TaskFlowApp {
             Message::SetSyncInterval(mins) => {
                 self.sync_interval_mins = mins;
                 Task::none()
+            }
+            Message::SelectTask(id_opt) => {
+                self.selected_task_id = id_opt.clone();
+                if let Some(id) = id_opt {
+                    let task_opt = self.tasks.iter().find(|t| t.id == id).cloned();
+                    if let Some(task) = task_opt {
+                        self.detail_title = task.title.clone();
+                        self.detail_notes = task.notes.clone().unwrap_or_default();
+                        self.detail_due_date_str = task.due_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+                        self.detail_reminder_time_str = task.reminder_time.map(|t| t.format("%H:%M").to_string()).unwrap_or_default();
+                    } else {
+                        self.detail_title = String::new();
+                        self.detail_notes = String::new();
+                        self.detail_due_date_str = String::new();
+                        self.detail_reminder_time_str = String::new();
+                    }
+                    self.new_subtask_title = String::new();
+                    self.detail_subtasks = Vec::new();
+                    
+                    let db = self.db.clone();
+                    let task_id = id.clone();
+                    Task::perform(
+                        async move {
+                            let conn = db.connect().map_err(|e| e.to_string())?;
+                            let subtasks = db::tasks::get_subtasks(&conn, &task_id).map_err(|e| e.to_string())?;
+                            Ok(subtasks)
+                        },
+                        Message::LoadedSubtasks,
+                    )
+                } else {
+                    self.detail_title = String::new();
+                    self.detail_notes = String::new();
+                    self.detail_due_date_str = String::new();
+                    self.detail_reminder_time_str = String::new();
+                    self.new_subtask_title = String::new();
+                    self.detail_subtasks = Vec::new();
+                    Task::none()
+                }
+            }
+            Message::LoadedSubtasks(Ok(subtasks)) => {
+                self.detail_subtasks = subtasks;
+                Task::none()
+            }
+            Message::LoadedSubtasks(Err(e)) => {
+                self.status_message = format!("Error loading subtasks: {}", e);
+                Task::none()
+            }
+            Message::LoadedDataAndSubtasks(lists, tasks, subtasks, counts) => {
+                self.lists = lists;
+                self.tasks = tasks;
+                self.detail_subtasks = subtasks;
+                self.subtask_counts = counts;
+                Task::none()
+            }
+            Message::DetailTitleChanged(title) => {
+                self.detail_title = title.clone();
+                if let Some(ref id) = self.selected_task_id {
+                    if let Some(task) = self.tasks.iter_mut().find(|t| &t.id == id) {
+                        task.title = title.clone();
+                    }
+                    let db = self.db.clone();
+                    let task_id = id.clone();
+                    let t_title = title;
+                    return Task::perform(
+                        async move {
+                            let conn = db.connect().map_err(|e| e.to_string())?;
+                            if let Some(mut task) = db::tasks::get(&conn, &task_id).map_err(|e| e.to_string())? {
+                                task.title = t_title;
+                                task.sync_state = SyncState::Pending;
+                                task.updated_at = chrono::Utc::now();
+                                db::tasks::update(&conn, &task).map_err(|e| e.to_string())?;
+                            }
+                            Ok(())
+                        },
+                        |_: Result<(), String>| Message::None,
+                    );
+                }
+                Task::none()
+            }
+            Message::DetailNotesChanged(notes) => {
+                self.detail_notes = notes.clone();
+                if let Some(ref id) = self.selected_task_id {
+                    let notes_opt = if notes.trim().is_empty() { None } else { Some(notes.clone()) };
+                    if let Some(task) = self.tasks.iter_mut().find(|t| &t.id == id) {
+                        task.notes = notes_opt.clone();
+                    }
+                    let db = self.db.clone();
+                    let task_id = id.clone();
+                    return Task::perform(
+                        async move {
+                            let conn = db.connect().map_err(|e| e.to_string())?;
+                            if let Some(mut task) = db::tasks::get(&conn, &task_id).map_err(|e| e.to_string())? {
+                                task.notes = notes_opt;
+                                task.sync_state = SyncState::Pending;
+                                task.updated_at = chrono::Utc::now();
+                                db::tasks::update(&conn, &task).map_err(|e| e.to_string())?;
+                            }
+                            Ok(())
+                        },
+                        |_: Result<(), String>| Message::None,
+                    );
+                }
+                Task::none()
+            }
+            Message::DetailDueDateStrChanged(due_str) => {
+                self.detail_due_date_str = due_str;
+                Task::none()
+            }
+            Message::DetailReminderTimeStrChanged(time_str) => {
+                self.detail_reminder_time_str = time_str;
+                Task::none()
+            }
+            Message::SaveDateTime => {
+                if let Some(ref id) = self.selected_task_id {
+                    let db = self.db.clone();
+                    let task_id = id.clone();
+                    let active_view = self.active_view.clone();
+                    
+                    let parsed_due = if self.detail_due_date_str.trim().is_empty() {
+                        None
+                    } else {
+                        taskflow_core::parser::parse_task_input(&self.detail_due_date_str).1
+                            .or_else(|| chrono::NaiveDate::parse_from_str(&self.detail_due_date_str, "%Y-%m-%d").ok())
+                    };
+                    
+                    let parsed_time = if self.detail_reminder_time_str.trim().is_empty() {
+                        None
+                    } else {
+                        taskflow_core::parser::parse_task_input(&format!("at {}", self.detail_reminder_time_str)).2
+                            .or_else(|| chrono::NaiveTime::parse_from_str(&self.detail_reminder_time_str, "%H:%M").ok())
+                    };
+                    
+                    self.detail_due_date_str = parsed_due.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+                    self.detail_reminder_time_str = parsed_time.map(|t| t.format("%H:%M").to_string()).unwrap_or_default();
+                    
+                    Task::perform(
+                        async move {
+                            let conn = db.connect().map_err(|e| e.to_string())?;
+                            if let Some(mut task) = db::tasks::get(&conn, &task_id).map_err(|e| e.to_string())? {
+                                task.due_date = parsed_due;
+                                task.reminder_time = parsed_time;
+                                task.sync_state = SyncState::Pending;
+                                task.updated_at = chrono::Utc::now();
+                                db::tasks::update(&conn, &task).map_err(|e| e.to_string())?;
+                            }
+                            let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
+                            let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
+                            let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                            Ok((lists, tasks, counts))
+                        },
+                        Message::LoadedData,
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::SetDueDateShortcut(due_opt) => {
+                if let Some(ref id) = self.selected_task_id {
+                    let db = self.db.clone();
+                    let task_id = id.clone();
+                    let active_view = self.active_view.clone();
+                    self.detail_due_date_str = due_opt.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+                    
+                    Task::perform(
+                        async move {
+                            let conn = db.connect().map_err(|e| e.to_string())?;
+                            if let Some(mut task) = db::tasks::get(&conn, &task_id).map_err(|e| e.to_string())? {
+                                task.due_date = due_opt;
+                                task.sync_state = SyncState::Pending;
+                                task.updated_at = chrono::Utc::now();
+                                db::tasks::update(&conn, &task).map_err(|e| e.to_string())?;
+                            }
+                            let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
+                            let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
+                            let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                            Ok((lists, tasks, counts))
+                        },
+                        Message::LoadedData,
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::NewSubtaskTitleChanged(title) => {
+                self.new_subtask_title = title;
+                Task::none()
+            }
+            Message::AddSubtask => {
+                let subtask_title = self.new_subtask_title.trim().to_string();
+                if subtask_title.is_empty() {
+                    return Task::none();
+                }
+                self.new_subtask_title.clear();
+                
+                if let Some(ref parent_id) = self.selected_task_id {
+                    let db = self.db.clone();
+                    let p_id = parent_id.clone();
+                    let active_view = self.active_view.clone();
+                    Task::perform(
+                        async move {
+                            let conn = db.connect().map_err(|e| e.to_string())?;
+                            if let Some(parent) = db::tasks::get(&conn, &p_id).map_err(|e| e.to_string())? {
+                                let new_subtask = LocalTask {
+                                     id: uuid::Uuid::new_v4().to_string(),
+                                     google_id: None,
+                                     list_id: parent.list_id,
+                                     title: subtask_title,
+                                     notes: None,
+                                     status: "needsAction".to_string(),
+                                     due_date: None,
+                                     reminder_time: None,
+                                     parent_id: Some(p_id.clone()),
+                                     position: None,
+                                     completed_at: None,
+                                     updated_at: chrono::Utc::now(),
+                                     google_updated_at: None,
+                                     sync_state: SyncState::Pending,
+                                     is_deleted: false,
+                                     recurrence_rule: None,
+                                };
+                                db::tasks::create(&conn, &new_subtask).map_err(|e| e.to_string())?;
+                            }
+                            let subtasks = db::tasks::get_subtasks(&conn, &p_id).map_err(|e| e.to_string())?;
+                            let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
+                            let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
+                            let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                            Ok((lists, tasks, subtasks, counts))
+                        },
+                        |res: Result<(Vec<TaskList>, Vec<LocalTask>, Vec<LocalTask>, HashMap<String, (usize, usize)>), String>| {
+                            match res {
+                                Ok((lists, tasks, subtasks, counts)) => Message::LoadedDataAndSubtasks(lists, tasks, subtasks, counts),
+                                Err(e) => Message::LoadedData(Err(e)),
+                            }
+                        }
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::DeleteTask(id) => {
+                if Some(&id) == self.selected_task_id.as_ref() {
+                    self.selected_task_id = None;
+                }
+                let db = self.db.clone();
+                let active_view = self.active_view.clone();
+                Task::perform(
+                    async move {
+                        let conn = db.connect().map_err(|e| e.to_string())?;
+                        db::tasks::soft_delete(&conn, &id).map_err(|e| e.to_string())?;
+                        let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
+                        let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
+                        let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                        Ok((lists, tasks, counts))
+                    },
+                    Message::LoadedData,
+                )
+            }
+            Message::DeleteSubtask(subtask_id) => {
+                let db = self.db.clone();
+                let parent_id = self.selected_task_id.clone();
+                let active_view = self.active_view.clone();
+                if let Some(ref p_id) = parent_id {
+                    let parent_id = p_id.clone();
+                    Task::perform(
+                        async move {
+                            let conn = db.connect().map_err(|e| e.to_string())?;
+                            db::tasks::soft_delete(&conn, &subtask_id).map_err(|e| e.to_string())?;
+                            let subtasks = db::tasks::get_subtasks(&conn, &parent_id).map_err(|e| e.to_string())?;
+                            let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
+                            let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
+                            let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                            Ok((lists, tasks, subtasks, counts))
+                        },
+                        |res: Result<(Vec<TaskList>, Vec<LocalTask>, Vec<LocalTask>, HashMap<String, (usize, usize)>), String>| {
+                            match res {
+                                Ok((lists, tasks, subtasks, counts)) => Message::LoadedDataAndSubtasks(lists, tasks, subtasks, counts),
+                                Err(e) => Message::LoadedData(Err(e)),
+                            }
+                        }
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ToggleSubtaskComplete(subtask_id) => {
+                let db = self.db.clone();
+                let parent_id = self.selected_task_id.clone();
+                let active_view = self.active_view.clone();
+                if let Some(ref p_id) = parent_id {
+                    let parent_id = p_id.clone();
+                    Task::perform(
+                        async move {
+                            let conn = db.connect().map_err(|e| e.to_string())?;
+                            if let Some(mut task) = db::tasks::get(&conn, &subtask_id).map_err(|e| e.to_string())? {
+                                if task.status == "completed" {
+                                    task.status = "needsAction".to_string();
+                                    task.completed_at = None;
+                                } else {
+                                    task.status = "completed".to_string();
+                                    task.completed_at = Some(chrono::Utc::now());
+                                }
+                                task.sync_state = SyncState::Pending;
+                                task.updated_at = chrono::Utc::now();
+                                db::tasks::update(&conn, &task).map_err(|e| e.to_string())?;
+                            }
+                            let subtasks = db::tasks::get_subtasks(&conn, &parent_id).map_err(|e| e.to_string())?;
+                            let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
+                            let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
+                            let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                            Ok((lists, tasks, subtasks, counts))
+                        },
+                        |res: Result<(Vec<TaskList>, Vec<LocalTask>, Vec<LocalTask>, HashMap<String, (usize, usize)>), String>| {
+                            match res {
+                                Ok((lists, tasks, subtasks, counts)) => Message::LoadedDataAndSubtasks(lists, tasks, subtasks, counts),
+                                Err(e) => Message::LoadedData(Err(e)),
+                            }
+                        }
+                    )
+                } else {
+                    Task::none()
+                }
             }
         }
     }
@@ -866,6 +1235,26 @@ impl TaskFlowApp {
             ActiveView::List(id) => db::tasks::get_all_active_in_list(conn, id).map_err(|e| e.to_string()),
             ActiveView::Settings => Ok(Vec::new()),
         }
+    }
+
+    fn load_subtask_counts(conn: &Connection, tasks: &[LocalTask]) -> Result<HashMap<String, (usize, usize)>, String> {
+        let mut subtask_counts = HashMap::new();
+        for task in tasks {
+            let mut stmt = conn.prepare(
+                "SELECT COUNT(*), SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) 
+                 FROM tasks 
+                 WHERE parent_id = ?1 AND is_deleted = 0"
+            ).map_err(|e| e.to_string())?;
+            let counts = stmt.query_row(rusqlite::params![task.id], |row| {
+                let total: usize = row.get(0)?;
+                let completed: usize = row.get::<_, Option<usize>>(1)?.unwrap_or(0);
+                Ok((completed, total))
+            }).unwrap_or((0, 0));
+            if counts.1 > 0 {
+                subtask_counts.insert(task.id.clone(), counts);
+            }
+        }
+        Ok(subtask_counts)
     }
 
     fn theme(&self) -> iced::Theme {
@@ -1296,6 +1685,9 @@ impl TaskFlowApp {
                 let mut completed_tasks = Vec::new();
 
                 for t in &self.tasks {
+                    if t.parent_id.is_some() {
+                        continue;
+                    }
                     if t.status == "completed" {
                         completed_tasks.push(t);
                     } else if let Some(due) = t.due_date {
@@ -1381,6 +1773,9 @@ impl TaskFlowApp {
                 // Group upcoming tasks by date
                 let mut date_groups: std::collections::BTreeMap<Option<chrono::NaiveDate>, Vec<&LocalTask>> = std::collections::BTreeMap::new();
                 for t in &self.tasks {
+                    if t.parent_id.is_some() {
+                        continue;
+                    }
                     date_groups.entry(t.due_date).or_default().push(t);
                 }
 
@@ -1429,6 +1824,9 @@ impl TaskFlowApp {
                 let mut active = Vec::new();
                 let mut completed = Vec::new();
                 for t in &self.tasks {
+                    if t.parent_id.is_some() {
+                        continue;
+                    }
                     if t.status == "completed" {
                         completed.push(t);
                     } else {
@@ -1528,8 +1926,20 @@ impl TaskFlowApp {
             main_content
         };
 
+        let detail_panel_active = self.selected_task_id.is_some() && self.active_view != ActiveView::Settings;
+
+        let content_row = if detail_panel_active {
+            let selected_id = self.selected_task_id.as_ref().unwrap();
+            row![
+                container(main_content_with_banner).width(Length::FillPortion(3)),
+                container(self.render_task_detail_panel(selected_id, colors)).width(Length::FillPortion(2))
+            ]
+        } else {
+            row![container(main_content_with_banner).width(Length::Fill).height(Length::Fill)]
+        };
+
         let main_layout = column![
-            row![sidebar, container(main_content_with_banner).width(Length::Fill).height(Length::Fill)],
+            row![sidebar, content_row.width(Length::Fill).height(Length::Fill)],
             status_bar
         ];
 
@@ -1839,6 +2249,33 @@ impl TaskFlowApp {
             }
         }
 
+        // Subtask count badge
+        if let Some(&(completed_subs, total_subs)) = self.subtask_counts.get(&task.id) {
+            meta_row = meta_row.push(
+                container(
+                    row![
+                        svg(icons::chevron_right()).width(10).height(10).style(move |_, _| svg::Style { color: Some(colors.text_secondary) }),
+                        Space::with_width(2),
+                        text(format!("{}/{}", completed_subs, total_subs))
+                            .font(FONT_MONO)
+                            .size(10)
+                            .style(move |_| text::Style { color: Some(colors.text_secondary) })
+                    ]
+                    .align_y(Alignment::Center)
+                )
+                .padding([2, 6])
+                .style(move |_| container::Style {
+                    background: Some(iced::Background::Color(colors.bg_base)),
+                    border: iced::Border {
+                        color: colors.border_subtle,
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                })
+            );
+        }
+
         let row_padding = iced::Padding {
             top: vertical_padding,
             bottom: vertical_padding,
@@ -1846,7 +2283,7 @@ impl TaskFlowApp {
             right: 14.0,
         };
 
-        container(
+        button(
             row![
                 check_btn,
                 Space::with_width(12),
@@ -1855,19 +2292,434 @@ impl TaskFlowApp {
             ]
             .align_y(Alignment::Center)
         )
+        .on_press(Message::SelectTask(Some(task.id.clone())))
         .padding(row_padding)
         .width(Length::Fill)
         .height(row_height)
-        .style(move |_| container::Style {
-            background: Some(iced::Background::Color(background_color)),
-            border: iced::Border {
-                color: border_color,
-                width: border_width,
-                radius: 8.0.into(),
-            },
-            ..Default::default()
+        .style(move |_, status| {
+            let bg = if is_selected {
+                colors.bg_surface_hover
+            } else if status == button::Status::Hovered {
+                colors.bg_surface_hover
+            } else {
+                colors.bg_surface
+            };
+            button::Style {
+                background: Some(iced::Background::Color(bg)),
+                text_color: colors.text_primary,
+                border: iced::Border {
+                    color: border_color,
+                    width: border_width,
+                    radius: 8.0.into(),
+                },
+                ..Default::default()
+            }
         })
         .into()
+    }
+
+    fn render_task_detail_panel<'a>(&'a self, selected_id: &'a str, colors: ColorTokens) -> Element<'a, Message> {
+        let task_opt = self.tasks.iter().find(|t| &t.id == selected_id);
+        
+        let task = match task_opt {
+            Some(t) => t,
+            None => {
+                return container(
+                    text("Loading task details...")
+                        .font(FONT_INTER)
+                        .size(14)
+                        .style(move |_| text::Style { color: Some(colors.text_secondary) })
+                )
+                .padding(24)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+            }
+        };
+
+        // Close button
+        let close_btn = button(
+            svg(icons::close())
+                .width(14)
+                .height(14)
+                .style(move |_, _| svg::Style { color: Some(colors.text_secondary) })
+        )
+        .on_press(Message::SelectTask(None))
+        .padding(8)
+        .style(move |_, status| {
+            let bg = if status == button::Status::Hovered {
+                colors.bg_surface_hover
+            } else {
+                iced::Color::TRANSPARENT
+            };
+            button::Style {
+                background: Some(iced::Background::Color(bg)),
+                border: iced::Border { radius: 100.0.into(), ..Default::default() },
+                ..Default::default()
+            }
+        });
+
+        // Header Row
+        let header_row = row![
+            svg(icons::pencil()).width(12).height(12).style(move |_, _| svg::Style { color: Some(colors.text_secondary) }),
+            Space::with_width(6),
+            text("TASK DETAILS")
+                .font(FONT_INTER)
+                .size(11)
+                .style(move |_| text::Style { color: Some(colors.text_secondary) }),
+            Space::with_width(Length::Fill),
+            close_btn
+        ]
+        .align_y(Alignment::Center);
+
+        // Checkbox + Title editing block
+        let is_completed = task.status == "completed";
+        let check_icon = if is_completed {
+            svg(icons::check()).width(16).height(16).style(move |_, _| svg::Style { color: Some(colors.accent_success) })
+        } else {
+            svg(icons::square()).width(16).height(16).style(move |_, _| svg::Style { color: Some(colors.text_secondary) })
+        };
+
+        let check_btn = button(check_icon)
+            .on_press(Message::ToggleComplete(task.id.clone()))
+            .style(move |_, _| button::Style {
+                background: Some(iced::Background::Color(colors.bg_surface)),
+                text_color: colors.text_secondary,
+                border: iced::Border { radius: 100.0.into(), ..Default::default() },
+                ..Default::default()
+            });
+
+        let title_input = text_input("Task Title", &self.detail_title)
+            .on_input(Message::DetailTitleChanged)
+            .padding(8)
+            .font(FONT_INTER)
+            .size(16)
+            .style(move |_, _| text_input::Style {
+                background: iced::Background::Color(colors.bg_surface),
+                border: iced::Border {
+                    color: colors.border_subtle,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                value: colors.text_primary,
+                placeholder: colors.text_secondary,
+                selection: colors.accent_primary,
+                icon: colors.text_secondary,
+            });
+
+        let title_row = row![check_btn, Space::with_width(8), title_input]
+            .align_y(Alignment::Center);
+
+        // Notes description block
+        let notes_label = text("Notes")
+            .font(FONT_INTER)
+            .size(12)
+            .style(move |_| text::Style { color: Some(colors.text_secondary) });
+
+        let notes_input = text_input("Add notes or description...", &self.detail_notes)
+            .on_input(Message::DetailNotesChanged)
+            .padding(12)
+            .font(FONT_INTER)
+            .size(13)
+            .style(move |_, _| text_input::Style {
+                background: iced::Background::Color(colors.bg_base),
+                border: iced::Border {
+                    color: colors.border_subtle,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                value: colors.text_primary,
+                placeholder: colors.text_secondary,
+                selection: colors.accent_primary,
+                icon: colors.text_secondary,
+            });
+
+        // Due date & time editing block
+        let datetime_label = text("Due Date & Local Reminder")
+            .font(FONT_INTER)
+            .size(12)
+            .style(move |_| text::Style { color: Some(colors.text_secondary) });
+
+        let due_date_input = text_input("Due Date (e.g. tomorrow or YYYY-MM-DD)", &self.detail_due_date_str)
+            .on_input(Message::DetailDueDateStrChanged)
+            .on_submit(Message::SaveDateTime)
+            .padding(10)
+            .font(FONT_INTER)
+            .size(13)
+            .style(move |_, _| text_input::Style {
+                background: iced::Background::Color(colors.bg_base),
+                border: iced::Border {
+                    color: colors.border_subtle,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                value: colors.text_primary,
+                placeholder: colors.text_secondary,
+                selection: colors.accent_primary,
+                icon: colors.text_secondary,
+            });
+
+        let reminder_time_input = text_input("Reminder Time (e.g. 5pm or HH:MM)", &self.detail_reminder_time_str)
+            .on_input(Message::DetailReminderTimeStrChanged)
+            .on_submit(Message::SaveDateTime)
+            .padding(10)
+            .font(FONT_INTER)
+            .size(13)
+            .style(move |_, _| text_input::Style {
+                background: iced::Background::Color(colors.bg_base),
+                border: iced::Border {
+                    color: colors.border_subtle,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                value: colors.text_primary,
+                placeholder: colors.text_secondary,
+                selection: colors.accent_primary,
+                icon: colors.text_secondary,
+            });
+
+        // Quick shortcuts for date
+        let today = chrono::Local::now().date_naive();
+        let tomorrow = today + chrono::Duration::days(1);
+        
+        let today_btn = button(text("Today").font(FONT_INTER).size(11))
+            .on_press(Message::SetDueDateShortcut(Some(today)))
+            .padding([4, 10])
+            .style(move |_, _| button::Style {
+                background: Some(iced::Background::Color(colors.bg_base)),
+                text_color: colors.accent_primary,
+                border: iced::Border {
+                    color: colors.border_subtle,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            });
+
+        let tomorrow_btn = button(text("Tomorrow").font(FONT_INTER).size(11))
+            .on_press(Message::SetDueDateShortcut(Some(tomorrow)))
+            .padding([4, 10])
+            .style(move |_, _| button::Style {
+                background: Some(iced::Background::Color(colors.bg_base)),
+                text_color: colors.accent_warning,
+                border: iced::Border {
+                    color: colors.border_subtle,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            });
+
+        let clear_date_btn = button(text("Clear Date").font(FONT_INTER).size(11))
+            .on_press(Message::SetDueDateShortcut(None))
+            .padding([4, 10])
+            .style(move |_, _| button::Style {
+                background: Some(iced::Background::Color(colors.bg_base)),
+                text_color: colors.accent_danger,
+                border: iced::Border {
+                    color: colors.border_subtle,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            });
+
+        let shortcuts_row = row![today_btn, tomorrow_btn, clear_date_btn].spacing(8);
+
+        let save_datetime_btn = button(
+            row![
+                svg(icons::check()).width(12).height(12).style(move |_, _| svg::Style { color: Some(colors.bg_base) }),
+                Space::with_width(4),
+                text("Apply Date & Time").font(FONT_INTER).size(12)
+            ]
+            .align_y(Alignment::Center)
+        )
+        .on_press(Message::SaveDateTime)
+        .padding([8, 12])
+        .style(move |_, _| button::Style {
+            background: Some(iced::Background::Color(colors.accent_primary)),
+            text_color: colors.bg_base,
+            border: iced::Border { radius: 6.0.into(), ..Default::default() },
+            ..Default::default()
+        });
+
+        let date_time_actions = row![
+            shortcuts_row,
+            Space::with_width(Length::Fill),
+            save_datetime_btn
+        ]
+        .align_y(Alignment::Center);
+
+        // Subtasks Header
+        let subtasks_label = text("Subtasks")
+            .font(FONT_INTER)
+            .size(12)
+            .style(move |_| text::Style { color: Some(colors.text_secondary) });
+
+        // Add subtask row
+        let add_subtask_row = row![
+            text_input("Add a subtask...", &self.new_subtask_title)
+                .on_input(Message::NewSubtaskTitleChanged)
+                .on_submit(Message::AddSubtask)
+                .padding(8)
+                .font(FONT_INTER)
+                .size(13)
+                .style(move |_, _| text_input::Style {
+                    background: iced::Background::Color(colors.bg_base),
+                    border: iced::Border {
+                        color: colors.border_subtle,
+                        width: 1.0,
+                        radius: 6.0.into(),
+                    },
+                    value: colors.text_primary,
+                    placeholder: colors.text_secondary,
+                    selection: colors.accent_primary,
+                    icon: colors.text_secondary,
+                }),
+            button(
+                row![
+                    svg(icons::plus()).width(10).height(10).style(move |_, _| svg::Style { color: Some(colors.bg_base) }),
+                    Space::with_width(4),
+                    text("Add").font(FONT_INTER).size(12)
+                ]
+                .align_y(Alignment::Center)
+            )
+            .on_press(Message::AddSubtask)
+            .padding([8, 12])
+            .style(move |_, _| button::Style {
+                background: Some(iced::Background::Color(colors.accent_primary)),
+                text_color: colors.bg_base,
+                border: iced::Border { radius: 6.0.into(), ..Default::default() },
+                ..Default::default()
+            })
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
+        // Render subtasks list
+        let mut subtasks_col = column![].spacing(6);
+        for subtask in &self.detail_subtasks {
+            let subtask_id = subtask.id.clone();
+            let is_subtask_completed = subtask.status == "completed";
+            
+            let subtask_check_icon = if is_subtask_completed {
+                svg(icons::check()).width(14).height(14).style(move |_, _| svg::Style { color: Some(colors.accent_success) })
+            } else {
+                svg(icons::square()).width(14).height(14).style(move |_, _| svg::Style { color: Some(colors.text_secondary) })
+            };
+            
+            let subtask_check_btn = button(subtask_check_icon)
+                .on_press(Message::ToggleSubtaskComplete(subtask_id.clone()))
+                .style(move |_, _| button::Style {
+                    background: Some(iced::Background::Color(colors.bg_base)),
+                    text_color: colors.text_secondary,
+                    border: iced::Border { radius: 100.0.into(), ..Default::default() },
+                    ..Default::default()
+                });
+                
+            let subtask_display_title = if is_subtask_completed {
+                strikethrough_animated(&subtask.title, 1.0)
+            } else {
+                subtask.title.clone()
+            };
+            
+            let delete_subtask_btn = button(
+                svg(icons::trash()).width(12).height(12).style(move |_, _| svg::Style { color: Some(colors.accent_danger) })
+            )
+            .on_press(Message::DeleteSubtask(subtask_id.clone()))
+            .style(move |_, _| button::Style {
+                background: Some(iced::Background::Color(colors.bg_base)),
+                text_color: colors.accent_danger,
+                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            });
+
+            subtasks_col = subtasks_col.push(
+                container(
+                    row![
+                        subtask_check_btn,
+                        Space::with_width(8),
+                        text(subtask_display_title)
+                            .font(FONT_INTER)
+                            .size(13)
+                            .style(move |_| text::Style {
+                                color: Some(if is_subtask_completed { colors.text_secondary } else { colors.text_primary })
+                            }),
+                        Space::with_width(Length::Fill),
+                        delete_subtask_btn
+                    ]
+                    .align_y(Alignment::Center)
+                )
+                .padding(8)
+                .style(move |_| container::Style {
+                    background: Some(iced::Background::Color(colors.bg_base)),
+                    border: iced::Border {
+                        color: colors.border_subtle,
+                        width: 1.0,
+                        radius: 6.0.into(),
+                    },
+                    ..Default::default()
+                })
+            );
+        }
+
+        // Delete Task button
+        let delete_task_btn = button(
+            row![
+                svg(icons::trash()).width(14).height(14).style(move |_, _| svg::Style { color: Some(colors.bg_base) }),
+                Space::with_width(8),
+                text("Delete Task").font(FONT_INTER).size(13)
+            ]
+            .align_y(Alignment::Center)
+        )
+        .on_press(Message::DeleteTask(task.id.clone()))
+        .padding(10)
+        .width(Length::Fill)
+        .style(move |_, _| button::Style {
+            background: Some(iced::Background::Color(colors.accent_danger)),
+            text_color: colors.bg_base,
+            border: iced::Border { radius: 8.0.into(), ..Default::default() },
+            ..Default::default()
+        });
+
+        // Assemble the panel
+        let panel_content = column![
+            header_row,
+            Space::with_height(16),
+            title_row,
+            Space::with_height(16),
+            notes_label,
+            notes_input,
+            Space::with_height(16),
+            datetime_label,
+            row![due_date_input, reminder_time_input].spacing(8),
+            Space::with_height(4),
+            date_time_actions,
+            Space::with_height(16),
+            subtasks_label,
+            subtasks_col,
+            Space::with_height(8),
+            add_subtask_row,
+            Space::with_height(24),
+            Space::with_height(Length::Fill),
+            delete_task_btn
+        ]
+        .spacing(4);
+
+        container(scrollable(panel_content).height(Length::Fill))
+            .padding(16)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(iced::Background::Color(colors.bg_surface)),
+                border: iced::Border {
+                    color: colors.border_subtle,
+                    width: 1.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
     }
 
     fn render_quick_add<'a>(&'a self, colors: ColorTokens) -> Element<'a, Message> {
