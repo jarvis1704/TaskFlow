@@ -170,15 +170,17 @@ pub async fn run_sync(db: &Database, client: &mut GoogleTasksClient) -> Result<S
                         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                         .map(|dt| dt.with_timezone(&Utc));
 
+                    let (notes, reminder_time) = extract_reminder_from_notes(&remote_task.notes);
+
                     let new_task = Task {
                         id: local_id,
                         google_id: Some(google_id.clone()),
                         list_id: list.id.clone(),
                         title: remote_task.title.clone().unwrap_or_default(),
-                        notes: remote_task.notes.clone(),
+                        notes,
                         status: remote_task.status.clone().unwrap_or_else(|| "needsAction".to_string()),
                         due_date,
-                        reminder_time: None,
+                        reminder_time,
                         parent_id: None,
                         position: remote_task.position.clone(),
                         completed_at,
@@ -211,11 +213,14 @@ pub async fn run_sync(db: &Database, client: &mut GoogleTasksClient) -> Result<S
                                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                                 .map(|dt| dt.with_timezone(&Utc));
 
+                            let (notes, reminder_time) = extract_reminder_from_notes(&remote_task.notes);
+
                             let old_status = local_task.status.clone();
                             local_task.title = remote_task.title.clone().unwrap_or_default();
-                            local_task.notes = remote_task.notes.clone();
+                            local_task.notes = notes;
                             local_task.status = remote_task.status.clone().unwrap_or_else(|| "needsAction".to_string());
                             local_task.due_date = due_date;
+                            local_task.reminder_time = reminder_time;
                             local_task.completed_at = completed_at;
                             local_task.position = remote_task.position.clone();
                             local_task.updated_at = remote_updated;
@@ -242,11 +247,14 @@ pub async fn run_sync(db: &Database, client: &mut GoogleTasksClient) -> Result<S
                                         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                                         .map(|dt| dt.with_timezone(&Utc));
 
+                                    let (notes, reminder_time) = extract_reminder_from_notes(&remote_task.notes);
+
                                     let old_status = local_task.status.clone();
                                     local_task.title = remote_task.title.clone().unwrap_or_default();
-                                    local_task.notes = remote_task.notes.clone();
+                                    local_task.notes = notes;
                                     local_task.status = remote_task.status.clone().unwrap_or_else(|| "needsAction".to_string());
                                     local_task.due_date = due_date;
+                                    local_task.reminder_time = reminder_time;
                                     local_task.completed_at = completed_at;
                                     local_task.position = remote_task.position.clone();
                                     local_task.updated_at = remote_updated;
@@ -290,10 +298,13 @@ pub async fn run_sync(db: &Database, client: &mut GoogleTasksClient) -> Result<S
                                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                                     .map(|dt| dt.with_timezone(&Utc));
 
+                                let (notes, reminder_time) = extract_reminder_from_notes(&remote_task.notes);
+
                                 local_task.title = remote_task.title.clone().unwrap_or_default();
-                                local_task.notes = remote_task.notes.clone();
+                                local_task.notes = notes;
                                 local_task.status = remote_task.status.clone().unwrap_or_else(|| "needsAction".to_string());
                                 local_task.due_date = due_date;
+                                local_task.reminder_time = reminder_time;
                                 local_task.completed_at = completed_at;
                                 local_task.position = remote_task.position.clone();
                                 local_task.is_deleted = false;
@@ -421,10 +432,28 @@ async fn push_task_to_google(
         None
     };
 
+    let mut notes_with_reminder = task.notes.clone();
+    if let Some(reminder) = task.reminder_time {
+        let reminder_str = format!("[Reminder: {}]", reminder.format("%H:%M:%S"));
+        if let Some(ref existing_notes) = task.notes {
+            let cleaned_existing = clean_reminder_from_notes(existing_notes);
+            if cleaned_existing.is_empty() {
+                notes_with_reminder = Some(reminder_str);
+            } else {
+                notes_with_reminder = Some(format!("{}\n{}", cleaned_existing, reminder_str));
+            }
+        } else {
+            notes_with_reminder = Some(reminder_str);
+        }
+    } else if let Some(ref existing_notes) = task.notes {
+        let cleaned = clean_reminder_from_notes(existing_notes);
+        notes_with_reminder = if cleaned.is_empty() { None } else { Some(cleaned) };
+    }
+
     let google_payload = GoogleTask {
         id: task.google_id.clone(),
         title: Some(task.title.clone()),
-        notes: task.notes.clone(),
+        notes: notes_with_reminder,
         status: Some(task.status.clone()),
         due: task.due_date.map(|d| format!("{}T00:00:00.000Z", d.format("%Y-%m-%d"))),
         completed: task.completed_at.map(|c| c.to_rfc3339()),
@@ -488,4 +517,49 @@ async fn push_task_to_google(
         }
     }
     Ok(())
+}
+
+fn clean_reminder_from_notes(notes: &str) -> String {
+    let mut lines = Vec::new();
+    for line in notes.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[Reminder:") && trimmed.ends_with(']') {
+            continue;
+        }
+        lines.push(line);
+    }
+    lines.join("\n").trim().to_string()
+}
+
+fn extract_reminder_from_notes(notes: &Option<String>) -> (Option<String>, Option<chrono::NaiveTime>) {
+    let notes_str = match notes {
+        Some(n) => n,
+        None => return (None, None),
+    };
+
+    let mut cleaned_lines = Vec::new();
+    let mut reminder_time = None;
+
+    for line in notes_str.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[Reminder:") && trimmed.ends_with(']') {
+            let time_part = &trimmed[10..trimmed.len() - 1];
+            if let Ok(time) = chrono::NaiveTime::parse_from_str(time_part, "%H:%M:%S") {
+                reminder_time = Some(time);
+            } else if let Ok(time) = chrono::NaiveTime::parse_from_str(time_part, "%H:%M") {
+                reminder_time = Some(time);
+            }
+            continue;
+        }
+        cleaned_lines.push(line);
+    }
+
+    let cleaned_notes = cleaned_lines.join("\n").trim().to_string();
+    let final_notes = if cleaned_notes.is_empty() {
+        None
+    } else {
+        Some(cleaned_notes)
+    };
+
+    (final_notes, reminder_time)
 }
