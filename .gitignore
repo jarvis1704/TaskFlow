@@ -88,4 +88,5 @@ pnpm-debug.log*
 *.temp
 *.bak
 *.pid
-*.seed
+
+CLAUDE.md
