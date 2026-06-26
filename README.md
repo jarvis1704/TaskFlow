@@ -4,6 +4,8 @@ A native, lightweight Linux desktop task manager that syncs bidirectionally with
 
 TaskFlow is designed to be highly responsive, offline-first, and lightweight, utilizing Rust and GPU-accelerated rendering. It bridges the gap between the convenience of the Google Tasks ecosystem and the speed of a native desktop application.
 
+### Note: This is a vibecoded software. The owner of this repository is not responsible for any slop code in this repository. It just serves its function flawlessly, which was exactly what was intented as the end result of the project. 
+
 ---
 
 ## Features
