@@ -72,6 +72,8 @@ pub struct TaskFlowApp {
     selected_palette_index: usize,
     sync_interval_mins: u32,
     completed_section_collapsed: bool,
+    creating_list: bool,
+    new_list_title: String,
 
     // Error and Connection States
     keyring_error: Option<String>,
@@ -112,6 +114,11 @@ pub enum Message {
     ToggleStarred(String), // task_id
     QuickAddChanged(String),
     QuickAddSubmit,
+    StartCreateList,
+    CancelCreateList,
+    NewListTitleChanged(String),
+    CreateList,
+    ListCreated(Result<(Vec<TaskList>, Vec<LocalTask>, HashMap<String, (usize, usize)>, String), String>),
     TriggerSync,
     SyncFinished(Result<taskflow_core::sync::engine::SyncReport, String>),
     Authenticate,
@@ -207,6 +214,8 @@ impl TaskFlowApp {
             selected_palette_index: 0,
             sync_interval_mins: 5,
             completed_section_collapsed: true,
+            creating_list: false,
+            new_list_title: String::new(),
             keyring_error,
             offline: false,
             token_revoked: false,
@@ -446,6 +455,68 @@ impl TaskFlowApp {
                     },
                     Message::LoadedData,
                 )
+            }
+            Message::StartCreateList => {
+                self.creating_list = true;
+                self.new_list_title.clear();
+                Task::none()
+            }
+            Message::CancelCreateList => {
+                self.creating_list = false;
+                self.new_list_title.clear();
+                Task::none()
+            }
+            Message::NewListTitleChanged(title) => {
+                self.new_list_title = title;
+                Task::none()
+            }
+            Message::CreateList => {
+                let title = self.new_list_title.trim().to_string();
+                if title.is_empty() {
+                    return Task::none();
+                }
+
+                let db = self.db.clone();
+                let position = self.lists.iter().map(|list| list.position).max().unwrap_or(0) + 1;
+                Task::perform(
+                    async move {
+                        let conn = db.connect().map_err(|e| e.to_string())?;
+                        let new_list_id = uuid::Uuid::new_v4().to_string();
+                        let new_list = TaskList {
+                            id: new_list_id.clone(),
+                            google_id: None,
+                            title,
+                            position,
+                            is_default: false,
+                            updated_at: chrono::Utc::now(),
+                        };
+                        db::task_lists::create(&conn, &new_list).map_err(|e| e.to_string())?;
+
+                        let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
+                        let active_view = ActiveView::List(new_list_id.clone());
+                        let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
+                        let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                        Ok((lists, tasks, counts, new_list_id))
+                    },
+                    Message::ListCreated,
+                )
+            }
+            Message::ListCreated(Ok((lists, tasks, counts, new_list_id))) => {
+                self.creating_list = false;
+                self.new_list_title.clear();
+                self.active_view = ActiveView::List(new_list_id);
+                self.pending_view = None;
+                self.view_fade_direction = ViewFadeDirection::Idle;
+                self.view_fade_progress = 1.0;
+                self.lists = lists;
+                self.tasks = tasks;
+                self.subtask_counts = counts;
+                self.status_message = "List created.".to_string();
+                Task::none()
+            }
+            Message::ListCreated(Err(e)) => {
+                self.status_message = format!("Error creating list: {}", e);
+                Task::none()
             }
             Message::TriggerSync => {
                 if !self.authenticated {
@@ -1522,10 +1593,28 @@ impl TaskFlowApp {
         });
 
         let mut lists_col = column![
-            text("LISTS")
-                .size(11)
-                .font(FONT_INTER)
-                .style(move |_| text::Style { color: Some(sidebar_colors.text_secondary) }),
+            row![
+                text("LISTS")
+                    .size(11)
+                    .font(FONT_INTER)
+                    .style(move |_| text::Style { color: Some(sidebar_colors.text_secondary) }),
+                Space::with_width(Length::Fill),
+                button(
+                    svg(icons::plus())
+                        .width(12)
+                        .height(12)
+                        .style(move |_, _| svg::Style { color: Some(sidebar_colors.text_secondary) })
+                )
+                .on_press(Message::StartCreateList)
+                .padding(3)
+                .style(move |_, _| button::Style {
+                    background: None,
+                    text_color: sidebar_colors.text_secondary,
+                    border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+            ]
+            .align_y(Alignment::Center),
             Space::with_height(4)
         ]
         .spacing(6);
@@ -1553,6 +1642,45 @@ impl TaskFlowApp {
                         },
                         ..Default::default()
                     })
+            );
+        }
+
+        if self.creating_list {
+            lists_col = lists_col.push(
+                column![
+                    text_input("List name", &self.new_list_title)
+                        .on_input(Message::NewListTitleChanged)
+                        .on_submit(Message::CreateList)
+                        .padding(8)
+                        .size(13)
+                        .font(FONT_INTER),
+                    row![
+                        button(text("Add").font(FONT_INTER).size(12))
+                            .on_press(Message::CreateList)
+                            .padding([6, 10])
+                            .style(move |_, _| button::Style {
+                                background: Some(iced::Background::Color(sidebar_colors.accent_primary)),
+                                text_color: sidebar_colors.bg_base,
+                                border: iced::Border { radius: 6.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                        button(text("Cancel").font(FONT_INTER).size(12))
+                            .on_press(Message::CancelCreateList)
+                            .padding([6, 10])
+                            .style(move |_, _| button::Style {
+                                background: Some(iced::Background::Color(sidebar_colors.bg_surface)),
+                                text_color: sidebar_colors.text_secondary,
+                                border: iced::Border {
+                                    color: sidebar_colors.border_subtle,
+                                    width: 1.0,
+                                    radius: 6.0.into(),
+                                },
+                                ..Default::default()
+                            })
+                    ]
+                    .spacing(6)
+                ]
+                .spacing(6)
             );
         }
 
