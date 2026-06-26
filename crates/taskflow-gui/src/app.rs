@@ -71,6 +71,7 @@ pub struct TaskFlowApp {
     command_palette_text: String,
     selected_palette_index: usize,
     sync_interval_mins: u32,
+    completed_section_collapsed: bool,
 
     // Error and Connection States
     keyring_error: Option<String>,
@@ -122,6 +123,7 @@ pub enum Message {
     CommandPaletteSubmit,
     ToggleTheme,
     SetSyncInterval(u32),
+    ToggleCompletedSection,
     CloseRevocationModal,
 }
 
@@ -204,6 +206,7 @@ impl TaskFlowApp {
             command_palette_text: String::new(),
             selected_palette_index: 0,
             sync_interval_mins: 5,
+            completed_section_collapsed: true,
             keyring_error,
             offline: false,
             token_revoked: false,
@@ -879,6 +882,10 @@ impl TaskFlowApp {
             }
             Message::SetSyncInterval(mins) => {
                 self.sync_interval_mins = mins;
+                Task::none()
+            }
+            Message::ToggleCompletedSection => {
+                self.completed_section_collapsed = !self.completed_section_collapsed;
                 Task::none()
             }
             Message::SelectTask(id_opt) => {
@@ -1872,16 +1879,16 @@ impl TaskFlowApp {
 
                 // Section 3: Completed Today
                 if !completed_tasks.is_empty() {
+                    let completed_count = completed_tasks.len();
                     let mut sec = column![
-                        text("Completed")
-                            .font(FONT_INTER)
-                            .size(13)
-                            .style(move |_| text::Style { color: Some(colors.accent_success) }),
+                        self.render_completed_section_header(completed_count, colors),
                         Space::with_height(4)
                     ].spacing(8);
 
-                    for t in completed_tasks {
-                        sec = sec.push(self.render_task_row(t, colors, false));
+                    if !self.completed_section_collapsed {
+                        for t in completed_tasks {
+                            sec = sec.push(self.render_task_row(t, colors, false));
+                        }
                     }
                     task_list_col = task_list_col.push(sec);
                 }
@@ -2001,15 +2008,15 @@ impl TaskFlowApp {
                 }
 
                 if !completed.is_empty() {
+                    let completed_count = completed.len();
                     task_list_col = task_list_col.push(Space::with_height(12));
                     task_list_col = task_list_col.push(
-                        text("Completed")
-                            .font(FONT_INTER)
-                            .size(13)
-                            .style(move |_| text::Style { color: Some(colors.text_secondary) })
+                        self.render_completed_section_header(completed_count, colors)
                     );
-                    for t in completed {
-                        task_list_col = task_list_col.push(self.render_task_row(t, colors, false));
+                    if !self.completed_section_collapsed {
+                        for t in completed {
+                            task_list_col = task_list_col.push(self.render_task_row(t, colors, false));
+                        }
                     }
                 }
 
@@ -3003,6 +3010,31 @@ impl TaskFlowApp {
         .into()
     }
 
+    fn render_completed_section_header<'a>(&self, count: usize, colors: ColorTokens) -> Element<'a, Message> {
+        let chevron = if self.completed_section_collapsed { ">" } else { "v" };
+
+        button(
+            row![
+                text(chevron)
+                    .font(FONT_MONO)
+                    .size(12),
+                Space::with_width(6),
+                text(format!("Completed ({})", count))
+                    .font(FONT_INTER)
+                    .size(13)
+            ]
+            .align_y(Alignment::Center)
+        )
+        .on_press(Message::ToggleCompletedSection)
+        .padding([4, 0])
+        .style(move |_, _| button::Style {
+            background: None,
+            text_color: colors.text_secondary,
+            ..Default::default()
+        })
+        .into()
+    }
+
     fn get_palette_matches(&self) -> Vec<(String, Message, String)> {
         let query = self.command_palette_text.to_lowercase();
         let mut matches = Vec::new();
@@ -3168,4 +3200,3 @@ fn strikethrough_animated(s: &str, progress: f32) -> String {
         }
     }).collect()
 }
-
