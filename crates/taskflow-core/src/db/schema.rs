@@ -38,7 +38,8 @@ pub fn init_db(conn: &Connection) -> Result<(), rusqlite::Error> {
             google_updated_at   TEXT,
             sync_state          TEXT NOT NULL DEFAULT 'pending',
             is_deleted          INTEGER NOT NULL DEFAULT 0,
-            recurrence_rule     TEXT
+            recurrence_rule     TEXT,
+            starred             INTEGER NOT NULL DEFAULT 0
         );",
         [],
     )?;
@@ -56,6 +57,23 @@ pub fn init_db(conn: &Connection) -> Result<(), rusqlite::Error> {
         "CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);",
         [],
     )?;
+
+    // Self-healing migration for existing databases: Check if starred column exists, if not, add it
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(tasks)")?;
+        let mut has_starred = false;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == "starred" {
+                has_starred = true;
+                break;
+            }
+        }
+        if !has_starred {
+            conn.execute("ALTER TABLE tasks ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;", [])?;
+        }
+    }
 
     // Create sync_meta table
     conn.execute(

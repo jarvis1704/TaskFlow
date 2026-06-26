@@ -72,6 +72,7 @@ pub fn handle_recurring_task_completion(conn: &Connection, task: &Task) -> Resul
         sync_state: SyncState::Pending,
         is_deleted: false,
         recurrence_rule: Some(rule.clone()),
+        starred: task.starred,
     };
 
     db::tasks::create(conn, &next_task)?;

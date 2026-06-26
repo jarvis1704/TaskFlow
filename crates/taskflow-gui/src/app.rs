@@ -108,6 +108,7 @@ pub enum Message {
     ToggleSubtaskComplete(String),
     SelectView(ActiveView),
     ToggleComplete(String), // task_id
+    ToggleStarred(String), // task_id
     QuickAddChanged(String),
     QuickAddSubmit,
     TriggerSync,
@@ -326,6 +327,52 @@ impl TaskFlowApp {
                     Message::LoadedData,
                 )
             }
+            Message::ToggleStarred(id) => {
+                if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
+                    task.starred = !task.starred;
+                }
+                if let Some(subtask) = self.detail_subtasks.iter_mut().find(|t| t.id == id) {
+                    subtask.starred = !subtask.starred;
+                }
+
+                let db = self.db.clone();
+                let active_view = self.active_view.clone();
+                let parent_id = self.selected_task_id.clone();
+                
+                Task::perform(
+                    async move {
+                        let conn = db.connect().map_err(|e| e.to_string())?;
+                        if let Some(mut task) = db::tasks::get(&conn, &id).map_err(|e| e.to_string())? {
+                            task.starred = !task.starred;
+                            task.sync_state = SyncState::Pending;
+                            task.updated_at = chrono::Utc::now();
+                            db::tasks::update(&conn, &task).map_err(|e| e.to_string())?;
+                        }
+                        
+                        let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
+                        let tasks = Self::load_tasks_for_view(&conn, &active_view)?;
+                        let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                        
+                        if let Some(ref p_id) = parent_id {
+                            let subtasks = db::tasks::get_subtasks(&conn, p_id).map_err(|e| e.to_string())?;
+                            Ok((lists, tasks, Some(subtasks), counts))
+                        } else {
+                            Ok((lists, tasks, None, counts))
+                        }
+                    },
+                    |res: Result<(Vec<TaskList>, Vec<LocalTask>, Option<Vec<LocalTask>>, HashMap<String, (usize, usize)>), String>| {
+                        match res {
+                            Ok((lists, tasks, Some(subtasks), counts)) => {
+                                Message::LoadedDataAndSubtasks(lists, tasks, subtasks, counts)
+                            }
+                            Ok((lists, tasks, None, counts)) => {
+                                Message::LoadedData(Ok((lists, tasks, counts)))
+                            }
+                            Err(e) => Message::LoadedData(Err(e)),
+                        }
+                    }
+                )
+            }
             Message::QuickAddChanged(text) => {
                 self.quick_add_text = text;
                 Task::none()
@@ -385,6 +432,7 @@ impl TaskFlowApp {
                              sync_state: SyncState::Pending,
                              is_deleted: false,
                              recurrence_rule: None,
+                             starred: false,
                         };
                         db::tasks::create(&conn, &new_task).map_err(|e| e.to_string())?;
                         
@@ -1051,6 +1099,7 @@ impl TaskFlowApp {
                                      sync_state: SyncState::Pending,
                                      is_deleted: false,
                                      recurrence_rule: None,
+                                     starred: false,
                                 };
                                 db::tasks::create(&conn, &new_subtask).map_err(|e| e.to_string())?;
                             }
@@ -1158,15 +1207,15 @@ impl TaskFlowApp {
     }
 
     fn load_tasks_for_view(conn: &Connection, view: &ActiveView) -> Result<Vec<LocalTask>, String> {
-        match view {
+        let mut tasks = match view {
             ActiveView::Today => {
                 // Today view fetches tasks due today or overdue
                 let mut stmt = conn.prepare(
-                    "SELECT id, google_id, list_id, title, notes, status, due_date, reminder_time, parent_id, position, completed_at, updated_at, google_updated_at, sync_state, is_deleted, recurrence_rule 
+                    "SELECT id, google_id, list_id, title, notes, status, due_date, reminder_time, parent_id, position, completed_at, updated_at, google_updated_at, sync_state, is_deleted, recurrence_rule, starred 
                      FROM tasks 
                      WHERE (due_date <= date('now', 'localtime') OR due_date IS NULL) AND is_deleted = 0 AND status = 'needsAction'
                      UNION
-                     SELECT id, google_id, list_id, title, notes, status, due_date, reminder_time, parent_id, position, completed_at, updated_at, google_updated_at, sync_state, is_deleted, recurrence_rule 
+                     SELECT id, google_id, list_id, title, notes, status, due_date, reminder_time, parent_id, position, completed_at, updated_at, google_updated_at, sync_state, is_deleted, recurrence_rule, starred 
                      FROM tasks 
                      WHERE completed_at >= date('now', 'start of day') AND is_deleted = 0 AND status = 'completed'
                      ORDER BY status ASC, due_date ASC, title ASC"
@@ -1204,6 +1253,7 @@ impl TaskFlowApp {
                     let recurrence_rule_str: Option<String> = row.get(15)?;
                     let recurrence_rule = recurrence_rule_str
                         .and_then(|s| serde_json::from_str(&s).ok());
+                    let starred: i32 = row.get(16)?;
 
                     Ok(LocalTask {
                         id: row.get(0)?,
@@ -1222,6 +1272,7 @@ impl TaskFlowApp {
                         sync_state,
                         is_deleted: is_deleted != 0,
                         recurrence_rule,
+                        starred: starred != 0,
                     })
                 }).map_err(|e| e.to_string())?;
 
@@ -1234,7 +1285,64 @@ impl TaskFlowApp {
             ActiveView::Upcoming => db::tasks::get_upcoming(conn, 7).map_err(|e| e.to_string()),
             ActiveView::List(id) => db::tasks::get_all_active_in_list(conn, id).map_err(|e| e.to_string()),
             ActiveView::Settings => Ok(Vec::new()),
-        }
+        }?;
+        
+        Self::sort_tasks(&mut tasks);
+        Ok(tasks)
+    }
+
+    fn get_task_datetime(task: &LocalTask) -> Option<chrono::NaiveDateTime> {
+        task.due_date.map(|date| {
+            let time = task.reminder_time.unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+            chrono::NaiveDateTime::new(date, time)
+        })
+    }
+
+    fn sort_tasks(tasks: &mut Vec<LocalTask>) {
+        let now = chrono::Local::now();
+        let local_now_naive = now.naive_local();
+
+        tasks.sort_by(|a, b| {
+            // 1. Status: completed tasks go to the bottom
+            let a_completed = a.status == "completed";
+            let b_completed = b.status == "completed";
+            if a_completed != b_completed {
+                return a_completed.cmp(&b_completed); // false < true, so active (false) comes first
+            }
+
+            // Both are active or both are completed
+            if !a_completed {
+                // Active tasks: Starred tasks pinned to the extreme top
+                if a.starred != b.starred {
+                    return b.starred.cmp(&a.starred); // true < false, so starred (true) comes first
+                }
+
+                // Both active starred or both active unstarred: Sort by priority (due date / time proximity)
+                let a_dt = Self::get_task_datetime(a);
+                let b_dt = Self::get_task_datetime(b);
+
+                match (a_dt, b_dt) {
+                    (Some(dt_a), Some(dt_b)) => {
+                        let diff_a = (dt_a - local_now_naive).num_seconds().abs();
+                        let diff_b = (dt_b - local_now_naive).num_seconds().abs();
+                        diff_a.cmp(&diff_b)
+                    }
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => {
+                        a.title.to_lowercase().cmp(&b.title.to_lowercase())
+                    }
+                }
+            } else {
+                // Both are completed: sort by completed_at descending (newest completed first)
+                match (a.completed_at, b.completed_at) {
+                    (Some(ca), Some(cb)) => cb.cmp(&ca),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => b.updated_at.cmp(&a.updated_at),
+                }
+            }
+        });
     }
 
     fn load_subtask_counts(conn: &Connection, tasks: &[LocalTask]) -> Result<HashMap<String, (usize, usize)>, String> {
@@ -1680,6 +1788,7 @@ impl TaskFlowApp {
                 let today_date = Utc::now().naive_utc().date();
                 
                 // Segment tasks
+                let mut pinned_tasks = Vec::new();
                 let mut overdue_tasks = Vec::new();
                 let mut today_tasks = Vec::new();
                 let mut completed_tasks = Vec::new();
@@ -1690,6 +1799,8 @@ impl TaskFlowApp {
                     }
                     if t.status == "completed" {
                         completed_tasks.push(t);
+                    } else if t.starred {
+                        pinned_tasks.push(t);
                     } else if let Some(due) = t.due_date {
                         if due < today_date {
                             overdue_tasks.push(t);
@@ -1703,6 +1814,29 @@ impl TaskFlowApp {
                 }
 
                 let mut task_list_col = column![].spacing(16);
+
+                // Section 0: Pinned
+                if !pinned_tasks.is_empty() {
+                    let mut sec = column![
+                        row![
+                            svg(icons::star_filled())
+                                .width(12)
+                                .height(12)
+                                .style(move |_, _| svg::Style { color: Some(colors.accent_warning) }),
+                            Space::with_width(6),
+                            text("Pinned")
+                                .font(FONT_INTER)
+                                .size(13)
+                                .style(move |_| text::Style { color: Some(colors.accent_warning) })
+                        ].align_y(Alignment::Center),
+                        Space::with_height(4)
+                    ].spacing(8);
+
+                    for t in pinned_tasks {
+                        sec = sec.push(self.render_task_row(t, colors, false));
+                    }
+                    task_list_col = task_list_col.push(sec);
+                }
 
                 // Section 1: Overdue
                 if !overdue_tasks.is_empty() {
@@ -1771,17 +1905,45 @@ impl TaskFlowApp {
             }
             ActiveView::Upcoming => {
                 // Group upcoming tasks by date
+                let mut pinned_tasks = Vec::new();
                 let mut date_groups: std::collections::BTreeMap<Option<chrono::NaiveDate>, Vec<&LocalTask>> = std::collections::BTreeMap::new();
                 for t in &self.tasks {
                     if t.parent_id.is_some() {
                         continue;
                     }
-                    date_groups.entry(t.due_date).or_default().push(t);
+                    if t.starred && t.status != "completed" {
+                        pinned_tasks.push(t);
+                    } else {
+                        date_groups.entry(t.due_date).or_default().push(t);
+                    }
                 }
 
                 let mut task_list_col = column![].spacing(20);
 
-                if date_groups.is_empty() {
+                // Section 0: Pinned
+                if !pinned_tasks.is_empty() {
+                    let mut sec = column![
+                        row![
+                            svg(icons::star_filled())
+                                .width(12)
+                                .height(12)
+                                .style(move |_, _| svg::Style { color: Some(colors.accent_warning) }),
+                            Space::with_width(6),
+                            text("Pinned")
+                                .font(FONT_INTER)
+                                .size(13)
+                                .style(move |_| text::Style { color: Some(colors.accent_warning) })
+                        ].align_y(Alignment::Center),
+                        Space::with_height(4)
+                    ].spacing(8);
+
+                    for &t in &pinned_tasks {
+                        sec = sec.push(self.render_task_row(t, colors, false));
+                    }
+                    task_list_col = task_list_col.push(sec);
+                }
+
+                if date_groups.is_empty() && pinned_tasks.is_empty() {
                     task_list_col = task_list_col.push(self.render_empty_state("No tasks scheduled for the next 7 days.", colors));
                 } else {
                     for (due_date, tasks) in date_groups {
@@ -2276,6 +2438,27 @@ impl TaskFlowApp {
             );
         }
 
+        let star_icon = if task.starred {
+            svg(icons::star_filled())
+                .width(16)
+                .height(16)
+                .style(move |_, _| svg::Style { color: Some(colors.accent_warning) })
+        } else {
+            svg(icons::star_outline())
+                .width(16)
+                .height(16)
+                .style(move |_, _| svg::Style { color: Some(colors.text_secondary) })
+        };
+
+        let star_btn = button(star_icon)
+            .on_press(Message::ToggleStarred(task.id.clone()))
+            .style(move |_, _| button::Style {
+                background: Some(iced::Background::Color(iced::Color::TRANSPARENT)),
+                text_color: colors.text_secondary,
+                border: iced::Border { radius: 100.0.into(), ..Default::default() },
+                ..Default::default()
+            });
+
         let row_padding = iced::Padding {
             top: vertical_padding,
             bottom: vertical_padding,
@@ -2288,7 +2471,9 @@ impl TaskFlowApp {
                 check_btn,
                 Space::with_width(12),
                 container(text_layout).width(Length::Fill),
-                meta_row
+                meta_row,
+                Space::with_width(12),
+                star_btn
             ]
             .align_y(Alignment::Center)
         )
@@ -2359,6 +2544,35 @@ impl TaskFlowApp {
             }
         });
 
+        // Star button
+        let star_icon = if task.starred {
+            svg(icons::star_filled())
+                .width(14)
+                .height(14)
+                .style(move |_, _| svg::Style { color: Some(colors.accent_warning) })
+        } else {
+            svg(icons::star_outline())
+                .width(14)
+                .height(14)
+                .style(move |_, _| svg::Style { color: Some(colors.text_secondary) })
+        };
+
+        let star_btn = button(star_icon)
+            .on_press(Message::ToggleStarred(task.id.clone()))
+            .padding(8)
+            .style(move |_, status| {
+                let bg = if status == button::Status::Hovered {
+                    colors.bg_surface_hover
+                } else {
+                    iced::Color::TRANSPARENT
+                };
+                button::Style {
+                    background: Some(iced::Background::Color(bg)),
+                    border: iced::Border { radius: 100.0.into(), ..Default::default() },
+                    ..Default::default()
+                }
+            });
+
         // Header Row
         let header_row = row![
             svg(icons::pencil()).width(12).height(12).style(move |_, _| svg::Style { color: Some(colors.text_secondary) }),
@@ -2368,6 +2582,8 @@ impl TaskFlowApp {
                 .size(11)
                 .style(move |_| text::Style { color: Some(colors.text_secondary) }),
             Space::with_width(Length::Fill),
+            star_btn,
+            Space::with_width(4),
             close_btn
         ]
         .align_y(Alignment::Center);

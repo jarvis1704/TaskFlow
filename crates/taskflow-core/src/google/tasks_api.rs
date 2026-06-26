@@ -31,6 +31,7 @@ pub struct GoogleTask {
     pub position: Option<String>,
     pub deleted: Option<bool>,
     pub hidden: Option<bool>,
+    pub starred: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

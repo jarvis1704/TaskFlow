@@ -97,6 +97,7 @@ fn test_task_crud() {
         sync_state: SyncState::Pending,
         is_deleted: false,
         recurrence_rule: Some(RecurrenceRule::Weekly(Weekday::Wed)),
+        starred: false,
     };
 
     // Create
@@ -179,6 +180,7 @@ fn test_subtask_and_upcoming_queries() {
         sync_state: SyncState::Pending,
         is_deleted: false,
         recurrence_rule: None,
+        starred: false,
     };
     db::tasks::create(&conn, &parent).unwrap();
 
@@ -200,6 +202,7 @@ fn test_subtask_and_upcoming_queries() {
         sync_state: SyncState::Pending,
         is_deleted: false,
         recurrence_rule: None,
+        starred: false,
     };
     db::tasks::create(&conn, &child).unwrap();
 

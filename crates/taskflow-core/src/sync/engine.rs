@@ -189,6 +189,7 @@ pub async fn run_sync(db: &Database, client: &mut GoogleTasksClient) -> Result<S
                         sync_state: SyncState::Synced,
                         is_deleted: false,
                         recurrence_rule: None,
+                        starred: remote_task.starred.unwrap_or(false),
                     };
 
                     let conn = db.connect().map_err(|e| e.to_string())?;
@@ -225,6 +226,7 @@ pub async fn run_sync(db: &Database, client: &mut GoogleTasksClient) -> Result<S
                             local_task.position = remote_task.position.clone();
                             local_task.updated_at = remote_updated;
                             local_task.google_updated_at = Some(remote_updated);
+                            local_task.starred = remote_task.starred.unwrap_or(false);
                             local_task.sync_state = SyncState::Synced;
 
                             let conn = db.connect().map_err(|e| e.to_string())?;
@@ -259,6 +261,7 @@ pub async fn run_sync(db: &Database, client: &mut GoogleTasksClient) -> Result<S
                                     local_task.position = remote_task.position.clone();
                                     local_task.updated_at = remote_updated;
                                     local_task.google_updated_at = Some(remote_updated);
+                                    local_task.starred = remote_task.starred.unwrap_or(false);
                                     local_task.sync_state = SyncState::Synced;
 
                                     let conn = db.connect().map_err(|e| e.to_string())?;
@@ -462,6 +465,7 @@ async fn push_task_to_google(
         position: None,
         deleted: None,
         hidden: None,
+        starred: Some(task.starred),
     };
 
     if task.google_id.is_none() {

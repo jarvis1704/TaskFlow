@@ -3,7 +3,7 @@ use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::str::FromStr;
 
-const SELECT_FIELDS: &str = "id, google_id, list_id, title, notes, status, due_date, reminder_time, parent_id, position, completed_at, updated_at, google_updated_at, sync_state, is_deleted, recurrence_rule";
+const SELECT_FIELDS: &str = "id, google_id, list_id, title, notes, status, due_date, reminder_time, parent_id, position, completed_at, updated_at, google_updated_at, sync_state, is_deleted, recurrence_rule, starred";
 
 fn map_row(row: &Row) -> Result<Task, rusqlite::Error> {
     let due_date: Option<String> = row.get(6)?;
@@ -77,6 +77,8 @@ fn map_row(row: &Row) -> Result<Task, rusqlite::Error> {
             Box::new(e),
         ))?;
 
+    let starred: i32 = row.get(16)?;
+
     Ok(Task {
         id: row.get(0)?,
         google_id: row.get(1)?,
@@ -94,6 +96,7 @@ fn map_row(row: &Row) -> Result<Task, rusqlite::Error> {
         sync_state,
         is_deleted: is_deleted != 0,
         recurrence_rule,
+        starred: starred != 0,
     })
 }
 
@@ -104,8 +107,8 @@ pub fn create(conn: &Connection, task: &Task) -> Result<(), rusqlite::Error> {
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
     conn.execute(
-        "INSERT INTO tasks (id, google_id, list_id, title, notes, status, due_date, reminder_time, parent_id, position, completed_at, updated_at, google_updated_at, sync_state, is_deleted, recurrence_rule)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        "INSERT INTO tasks (id, google_id, list_id, title, notes, status, due_date, reminder_time, parent_id, position, completed_at, updated_at, google_updated_at, sync_state, is_deleted, recurrence_rule, starred)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             task.id,
             task.google_id,
@@ -123,6 +126,7 @@ pub fn create(conn: &Connection, task: &Task) -> Result<(), rusqlite::Error> {
             task.sync_state.to_string(),
             if task.is_deleted { 1 } else { 0 },
             rrule_str,
+            if task.starred { 1 } else { 0 },
         ],
     )?;
     Ok(())
@@ -258,7 +262,7 @@ pub fn update(conn: &Connection, task: &Task) -> Result<(), rusqlite::Error> {
          SET google_id = ?2, list_id = ?3, title = ?4, notes = ?5, status = ?6,
              due_date = ?7, reminder_time = ?8, parent_id = ?9, position = ?10,
              completed_at = ?11, updated_at = ?12, google_updated_at = ?13,
-             sync_state = ?14, is_deleted = ?15, recurrence_rule = ?16
+             sync_state = ?14, is_deleted = ?15, recurrence_rule = ?16, starred = ?17
          WHERE id = ?1",
         params![
             task.id,
@@ -277,6 +281,7 @@ pub fn update(conn: &Connection, task: &Task) -> Result<(), rusqlite::Error> {
             task.sync_state.to_string(),
             if task.is_deleted { 1 } else { 0 },
             rrule_str,
+            if task.starred { 1 } else { 0 },
         ],
     )?;
     Ok(())

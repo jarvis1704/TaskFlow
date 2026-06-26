@@ -64,6 +64,7 @@ fn test_handle_recurring_task_completion() {
         sync_state: SyncState::Synced,
         is_deleted: false,
         recurrence_rule: Some(RecurrenceRule::Weekly(Weekday::Wed)),
+        starred: false,
     };
     db::tasks::create(&conn, &task).unwrap();
 

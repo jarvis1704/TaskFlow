@@ -85,4 +85,5 @@ pub struct Task {
     pub sync_state: SyncState,
     pub is_deleted: bool,
     pub recurrence_rule: Option<RecurrenceRule>,
+    pub starred: bool,
 }
