@@ -27,7 +27,7 @@ pub async fn run_sync(db: &Database, client: &mut GoogleTasksClient) -> Result<S
     let remote_lists = client.list_task_lists().await
         .map_err(|e| format!("Failed to list remote task lists: {}", e))?;
 
-    let remote_lists_map: HashMap<String, _> = remote_lists.into_iter()
+    let mut remote_lists_map: HashMap<String, _> = remote_lists.into_iter()
         .map(|l| (l.id.clone(), l))
         .collect();
 
@@ -72,7 +72,9 @@ pub async fn run_sync(db: &Database, client: &mut GoogleTasksClient) -> Result<S
             info!("Pushing new local list: {}", local_list.title);
             match client.create_task_list(&local_list.title).await {
                 Ok(remote_list) => {
-                    local_list.google_id = Some(remote_list.id);
+                    let remote_id = remote_list.id.clone();
+                    remote_lists_map.insert(remote_id.clone(), remote_list);
+                    local_list.google_id = Some(remote_id);
                     local_list.updated_at = Utc::now();
                     
                     let conn = db.connect().map_err(|e| e.to_string())?;

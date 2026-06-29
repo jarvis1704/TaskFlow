@@ -223,3 +223,54 @@ fn test_subtask_and_upcoming_queries() {
     // So both parent and child should match.
     assert_eq!(upcoming_tasks.len(), 2);
 }
+
+#[test]
+fn test_task_list_cascade_delete() {
+    let db = Database::in_memory();
+    let conn = db.connect().unwrap();
+
+    let list_id = Uuid::new_v4().to_string();
+    let list = TaskList {
+        id: list_id.clone(),
+        google_id: Some("g_list_cascade".to_string()),
+        title: "Cascade List".to_string(),
+        position: 0,
+        is_default: false,
+        updated_at: Utc::now(),
+    };
+    db::task_lists::create(&conn, &list).unwrap();
+
+    let task_id = Uuid::new_v4().to_string();
+    let task = Task {
+        id: task_id.clone(),
+        google_id: None,
+        list_id: list_id.clone(),
+        title: "Cascade Task".to_string(),
+        notes: None,
+        status: "needsAction".to_string(),
+        due_date: None,
+        reminder_time: None,
+        parent_id: None,
+        position: None,
+        completed_at: None,
+        updated_at: Utc::now(),
+        google_updated_at: None,
+        sync_state: SyncState::Pending,
+        is_deleted: false,
+        recurrence_rule: None,
+        starred: false,
+    };
+    db::tasks::create(&conn, &task).unwrap();
+
+    // Verify task exists
+    let fetched = db::tasks::get(&conn, &task_id).unwrap();
+    assert!(fetched.is_some());
+
+    // Delete list
+    db::task_lists::delete(&conn, &list_id).unwrap();
+
+    // Verify task is deleted due to CASCADE
+    let fetched_after = db::tasks::get(&conn, &task_id).unwrap();
+    assert!(fetched_after.is_none());
+}
+

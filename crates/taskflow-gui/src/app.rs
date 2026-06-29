@@ -120,6 +120,7 @@ pub enum Message {
     NewListTitleChanged(String),
     CreateList,
     ListCreated(Result<(Vec<TaskList>, Vec<LocalTask>, HashMap<String, (usize, usize)>, String), String>),
+    DeleteList(String),
     TriggerSync,
     SyncFinished(Result<taskflow_core::sync::engine::SyncReport, String>),
     Authenticate,
@@ -463,7 +464,7 @@ impl TaskFlowApp {
             Message::StartCreateList => {
                 self.creating_list = true;
                 self.new_list_title.clear();
-                Task::none()
+                return text_input::focus(text_input::Id::new("new_list_input"));
             }
             Message::CancelCreateList => {
                 self.creating_list = false;
@@ -515,7 +516,12 @@ impl TaskFlowApp {
                 self.lists = lists;
                 self.tasks = tasks;
                 self.subtask_counts = counts;
-                self.status_message = "List created.".to_string();
+                if self.authenticated {
+                    self.status_message = "List created. Syncing with Google Tasks...".to_string();
+                    return self.update(Message::TriggerSync);
+                } else {
+                    self.status_message = "List created (pending sync).".to_string();
+                }
                 Task::none()
             }
             Message::ListCreated(Err(e)) => {
@@ -550,7 +556,8 @@ impl TaskFlowApp {
                 self.offline = false;
                 self.token_revoked = false;
                 self.status_message = format!(
-                    "Sync success! Pulled: {}, Pushed: {}, Deleted: {}",
+                    "Sync success! Lists: +{}/^{}, Tasks: +{}/^{}/-{}",
+                    report.lists_pulled, report.lists_pushed,
                     report.tasks_pulled, report.tasks_pushed, report.tasks_deleted
                 );
                 let db = self.db.clone();
@@ -1228,6 +1235,41 @@ impl TaskFlowApp {
                     Message::LoadedData,
                 )
             }
+            Message::DeleteList(list_id) => {
+                let google_id_opt = self.lists.iter().find(|l| l.id == list_id).and_then(|l| l.google_id.clone());
+                let db = self.db.clone();
+                let authenticated = self.authenticated;
+                
+                if match &self.active_view {
+                    ActiveView::List(id) => id == &list_id,
+                    _ => false,
+                } {
+                    self.active_view = ActiveView::Today;
+                }
+
+                self.status_message = "Deleting list...".to_string();
+
+                Task::perform(
+                    async move {
+                        let conn = db.connect().map_err(|e| e.to_string())?;
+                        if let Some(gid) = google_id_opt {
+                            if authenticated {
+                                if let Ok(creds) = load_credentials() {
+                                    let token_manager = TokenManager::new();
+                                    let mut client = GoogleTasksClient::new(creds, token_manager);
+                                    let _ = client.delete_task_list(&gid).await;
+                                }
+                            }
+                        }
+                        db::task_lists::delete(&conn, &list_id).map_err(|e| e.to_string())?;
+                        let lists = db::task_lists::get_all(&conn).map_err(|e| e.to_string())?;
+                        let tasks = Self::load_tasks_for_view(&conn, &ActiveView::Today)?;
+                        let counts = Self::load_subtask_counts(&conn, &tasks)?;
+                        Ok((lists, tasks, counts))
+                    },
+                    Message::LoadedData,
+                )
+            }
             Message::DeleteSubtask(subtask_id) => {
                 let db = self.db.clone();
                 let parent_id = self.selected_task_id.clone();
@@ -1661,6 +1703,7 @@ impl TaskFlowApp {
             lists_col = lists_col.push(
                 column![
                     text_input("List name", &self.new_list_title)
+                        .id(text_input::Id::new("new_list_input"))
                         .on_input(Message::NewListTitleChanged)
                         .on_submit(Message::CreateList)
                         .padding(8)
@@ -2178,8 +2221,50 @@ impl TaskFlowApp {
 
                 let quick_add = self.render_quick_add(colors);
 
-                column![
+                let is_synced = self.lists.iter().find(|l| &l.id == id).map(|l| l.google_id.is_some()).unwrap_or(false);
+                let sync_badge = if is_synced {
+                    container(text("Synced").size(11).font(FONT_INTER).style(move |_| text::Style { color: Some(colors.accent_success) }))
+                        .padding([4, 8])
+                        .style(move |_| container::Style {
+                            background: Some(iced::Background::Color(colors.bg_surface)),
+                            border: iced::Border { color: colors.accent_success, width: 1.0, radius: 12.0.into() },
+                            ..Default::default()
+                        })
+                } else {
+                    container(text("Pending Sync").size(11).font(FONT_INTER).style(move |_| text::Style { color: Some(colors.accent_warning) }))
+                        .padding([4, 8])
+                        .style(move |_| container::Style {
+                            background: Some(iced::Background::Color(colors.bg_surface)),
+                            border: iced::Border { color: colors.accent_warning, width: 1.0, radius: 12.0.into() },
+                            ..Default::default()
+                        })
+                };
+
+                let header = row![
                     text(view_title).size(30).font(FONT_INTER).style(move |_| text::Style { color: Some(colors.text_primary) }),
+                    Space::with_width(12),
+                    sync_badge,
+                    Space::with_width(Length::Fill),
+                    button(
+                        row![
+                            svg(icons::trash()).width(14).height(14).style(move |_, _| svg::Style { color: Some(colors.accent_danger) }),
+                            Space::with_width(6),
+                            text("Delete List").size(13).font(FONT_INTER).style(move |_| text::Style { color: Some(colors.accent_danger) })
+                        ]
+                        .align_y(Alignment::Center)
+                    )
+                    .on_press(Message::DeleteList(id.clone()))
+                    .padding([6, 12])
+                    .style(move |_, _| button::Style {
+                        background: Some(iced::Background::Color(colors.bg_surface)),
+                        border: iced::Border { color: colors.border_subtle, width: 1.0, radius: 6.0.into() },
+                        ..Default::default()
+                    })
+                ]
+                .align_y(Alignment::Center);
+
+                column![
+                    header,
                     Space::with_height(16),
                     scrollable(task_list_col)
                         .height(Length::Fill)
@@ -3202,6 +3287,7 @@ impl TaskFlowApp {
         let mut matches = Vec::new();
 
         let actions = vec![
+            ("Create New List".to_string(), Message::StartCreateList, "Action".to_string()),
             ("Sync Now".to_string(), Message::TriggerSync, "Action".to_string()),
             ("Go to Today View".to_string(), Message::SelectView(ActiveView::Today), "Action".to_string()),
             ("Go to Upcoming View".to_string(), Message::SelectView(ActiveView::Upcoming), "Action".to_string()),

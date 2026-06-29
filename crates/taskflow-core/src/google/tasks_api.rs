@@ -149,6 +149,13 @@ impl GoogleTasksClient {
         Ok(list)
     }
 
+    /// Delete a task list
+    pub async fn delete_task_list(&mut self, list_id: &str) -> Result<(), String> {
+        let url = format!("https://tasks.googleapis.com/tasks/v1/users/@me/lists/{}", list_id);
+        let _ = self.request(reqwest::Method::DELETE, &url, &[], None).await?;
+        Ok(())
+    }
+
     /// List tasks in a task list (with pagination)
     pub async fn list_tasks(
         &mut self,
